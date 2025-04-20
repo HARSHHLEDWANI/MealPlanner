@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Camera, ImageIcon, Loader, X } from 'lucide-react';
+import { Camera, ImageIcon, Loader, X, Search } from 'lucide-react';
 import { useRecipeStore } from '../store/recipeStore';
 import RecipeGrid from '../components/recipes/RecipeGrid';
 
@@ -30,7 +30,7 @@ const ImageRecognition: React.FC = () => {
     onDrop,
     accept: {
       'image/*': ['.png', '.jpg', '.jpeg']
-    }
+    } as Record<string, string[]>
   });
 
   const handleClearImage = () => {

@@ -7,15 +7,23 @@ export interface User {
   export interface Recipe {
     id: string;
     title: string;
-    description: string;
-    image_url: string;
-    prep_time: number;
-    cook_time: number;
-    serving_size: number;
-    ingredients: Ingredient[];
+    description?: string;
+    ingredients: string[];
     instructions: string[];
-    tags: string[];
-    saved: boolean;
+    prepTime: string;
+    servings: number;
+    difficulty: 'Easy' | 'Medium' | 'Hard';
+    imageUrl: string;
+    saved?: boolean;
+    user_generated?: boolean;
+    created_at?: string;
+    // Enhanced fields from OpenAI
+    alternatives?: string[];
+    tips?: string[];
+    serving_suggestions?: string[];
+    storage_instructions?: string;
+    nutritional_info?: string;
+    enhanced_at?: string;
   }
   
   export interface Ingredient {

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { Recipe } from '../types';
 import { supabase } from '../lib/supabase';
-import { generateRecipesFromIngredients, enhanceRecipeWithAI } from '../lib/recipeAI';
+import { generateRecipesFromIngredients, enhanceRecipeWithAI } from '../lib/openai';
 
 interface RecipeState {
   recipes: Recipe[];
@@ -16,6 +16,7 @@ interface RecipeState {
   saveRecipe: (recipeId: string) => Promise<void>;
   unsaveRecipe: (recipeId: string) => Promise<void>;
   getRecipeDetails: (recipeId: string) => Promise<Recipe | null>;
+  enhanceRecipe: (recipeId: string) => Promise<void>;
 }
 
 export const useRecipeStore = create<RecipeState>((set, get) => ({
@@ -34,7 +35,6 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
 
       if (error) throw error;
       
-      // Ensure all recipes have the required properties
       const formattedRecipes = (data as Recipe[]).map(recipe => ({
         ...recipe,
         ingredients: recipe.ingredients || [],
@@ -61,7 +61,6 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
 
       if (error) throw error;
       
-      // Get the full recipe details for each saved recipe
       if (data.length > 0) {
         const recipeIds = data.map(item => item.recipe_id);
         const { data: recipesData, error: recipesError } = await supabase
@@ -157,7 +156,6 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
 
       if (error) throw error;
       
-      // Update the local state
       const { recipes, savedRecipes } = get();
       const recipe = recipes.find(r => r.id === recipeId);
       
@@ -184,7 +182,6 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
 
       if (error) throw error;
       
-      // Update the local state
       const { savedRecipes } = get();
       set({ 
         savedRecipes: savedRecipes.filter(recipe => recipe.id !== recipeId) 
@@ -216,6 +213,44 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
     } catch (error) {
       console.error('Error fetching recipe details:', error);
       return null;
+    }
+  },
+
+  enhanceRecipe: async (recipeId: string) => {
+    try {
+      const recipe = await get().getRecipeDetails(recipeId);
+      if (!recipe) throw new Error('Recipe not found');
+
+      const enhancedData = await enhanceRecipeWithAI(recipe);
+      
+      // Update the recipe in Supabase with enhanced data
+      const { error } = await supabase
+        .from('recipes')
+        .update({
+          alternatives: enhancedData.alternatives,
+          tips: enhancedData.tips,
+          serving_suggestions: enhancedData.servingSuggestions,
+          storage_instructions: enhancedData.storageInstructions,
+          nutritional_info: enhancedData.nutritionalInfo,
+          enhanced_at: new Date().toISOString()
+        })
+        .eq('id', recipeId);
+
+      if (error) throw error;
+
+      // Update the local state
+      const { recipes } = get();
+      set({
+        recipes: recipes.map(r => 
+          r.id === recipeId 
+            ? { ...r, ...enhancedData }
+            : r
+        )
+      });
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to enhance recipe' 
+      });
     }
   }
 }));
