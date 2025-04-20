@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Search, ChefHat, ArrowRight, Clock, Bookmark, Loader2, Heart, BookOpen } from 'lucide-react';
+import React, { useEffect, useState, useRef } from 'react';
+import { Search, ChefHat, ArrowRight, Clock, Bookmark, Loader2, Heart, BookOpen, Camera, Upload } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useRecipeStore } from '../store/recipeStore';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -148,6 +148,35 @@ const Dashboard: React.FC = () => {
             <Heart className="w-8 h-8 text-primary mb-4" />
             <h3 className="font-semibold mb-2">Saved Recipes</h3>
             <p className="text-gray-600 text-sm">Access your favorite recipes quickly</p>
+          </motion.div>
+
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer relative group"
+            onClick={() => document.getElementById('imageInput')?.click()}
+          >
+            <input
+              type="file"
+              id="imageInput"
+              className="hidden"
+              accept="image/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  // Handle the selected file
+                  navigate('/image-recognition', { state: { imageFile: file } });
+                }
+              }}
+            />
+            <div className="flex items-center justify-between mb-4">
+              <ChefHat className="w-8 h-8 text-secondary-600" />
+              <div className="absolute right-4 top-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <Camera className="w-5 h-5 text-gray-500" />
+                <Upload className="w-5 h-5 text-gray-500" />
+              </div>
+            </div>
+            <h3 className="font-semibold mb-2">Snap & Cook</h3>
+            <p className="text-gray-600 text-sm">Take a photo or upload an image of your ingredients to generate recipe ideas</p>
           </motion.div>
         </motion.div>
 

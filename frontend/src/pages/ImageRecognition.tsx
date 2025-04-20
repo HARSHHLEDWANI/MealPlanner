@@ -1,193 +1,170 @@
-import React, { useState, useCallback } from 'react';
-import { useDropzone } from 'react-dropzone';
-import { Camera, ImageIcon, Loader, X, Search } from 'lucide-react';
-import { useRecipeStore } from '../store/recipeStore';
-import RecipeGrid from '../components/recipes/RecipeGrid';
+import React, { useState, useRef } from 'react';
+import { motion } from 'framer-motion';
+import { Camera, Upload, X, Loader2 } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 const ImageRecognition: React.FC = () => {
-  const [image, setImage] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [identifiedIngredients, setIdentifiedIngredients] = useState<string[]>([]);
-  
-  const { searchByIngredients, searchResults, loading } = useRecipeStore();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [image, setImage] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isCameraActive, setIsCameraActive] = useState(false);
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles && acceptedFiles.length > 0) {
-      const file = acceptedFiles[0];
-      setImage(file);
-      
-      // Create preview
-      const objectUrl = URL.createObjectURL(file);
-      setPreview(objectUrl);
-      
-      // Reset previous results
-      setIdentifiedIngredients([]);
+  // Handle file upload
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
-  }, []);
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: {
-      'image/*': ['.png', '.jpg', '.jpeg']
-    } as Record<string, string[]>
-  });
-
-  const handleClearImage = () => {
-    if (preview) {
-      URL.revokeObjectURL(preview);
-    }
-    setImage(null);
-    setPreview(null);
-    setIdentifiedIngredients([]);
   };
 
-  const handleAnalyzeImage = async () => {
-    if (!image) return;
-    
-    setAnalyzing(true);
-    
+  // Handle camera capture
+  const startCamera = async () => {
     try {
-      // Simulate AI image analysis
-      // In a real app, you would send the image to an AI service
-      // and get back identified ingredients
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Mock ingredients for demo
-      const mockIngredients = [
-        'tomatoes',
-        'onions',
-        'bell peppers',
-        'garlic',
-        'olive oil'
-      ];
-      
-      setIdentifiedIngredients(mockIngredients);
-      searchByIngredients(mockIngredients);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setIsCameraActive(true);
+      }
     } catch (error) {
-      console.error('Error analyzing image:', error);
-    } finally {
-      setAnalyzing(false);
+      console.error('Error accessing camera:', error);
     }
   };
 
-  const handleCapturePhoto = () => {
-    // In a real app, you would access the device camera here
-    alert('In a real app, this would open your camera to take a photo.');
+  const stopCamera = () => {
+    if (videoRef.current?.srcObject) {
+      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+      tracks.forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+      setIsCameraActive(false);
+    }
+  };
+
+  const captureImage = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      canvas.getContext('2d')?.drawImage(videoRef.current, 0, 0);
+      const imageDataUrl = canvas.toDataURL('image/jpeg');
+      setImage(imageDataUrl);
+      stopCamera();
+    }
+  };
+
+  // Process the image
+  const processImage = async () => {
+    if (!image) return;
+
+    setIsProcessing(true);
+    try {
+      // TODO: Implement image processing logic with OpenAI Vision API
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Simulated delay
+      navigate('/recipes', { state: { ingredients: ['tomato', 'onion', 'garlic'] } }); // Example result
+    } catch (error) {
+      console.error('Error processing image:', error);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-800">Snap & Cook</h1>
-        <p className="text-gray-600 mt-2">Take a photo of your ingredients and let AI find recipes</p>
-      </div>
-      
-      <div className="bg-white rounded-lg shadow-card p-6">
-        <h2 className="text-xl font-semibold mb-4">Upload Food Image</h2>
-        
-        {preview ? (
-          <div className="mb-6">
-            <div className="relative">
-              <img 
-                src={preview} 
-                alt="Food" 
-                className="w-full max-h-96 object-contain rounded-lg"
-              />
-              <button 
-                className="absolute top-2 right-2 bg-gray-800 bg-opacity-70 rounded-full p-1 text-white hover:bg-opacity-100"
-                onClick={handleClearImage}
+    <div className="container mx-auto px-4 py-8">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-2xl mx-auto"
+      >
+        <h1 className="text-3xl font-bold mb-8">Snap & Cook</h1>
+
+        <div className="bg-white rounded-lg shadow-md p-6">
+          {!image && !isCameraActive && (
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors"
               >
-                <X size={20} />
+                <Upload className="w-8 h-8 mb-2 text-gray-500" />
+                <span className="text-sm text-gray-600">Upload Image</span>
+              </button>
+              <button
+                onClick={startCamera}
+                className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors"
+              >
+                <Camera className="w-8 h-8 mb-2 text-gray-500" />
+                <span className="text-sm text-gray-600">Take Photo</span>
               </button>
             </div>
-          </div>
-        ) : (
-          <div 
-            {...getRootProps()} 
-            className={`border-2 border-dashed rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer mb-6 transition-colors ${
-              isDragActive ? 'border-primary-500 bg-primary-50' : 'border-gray-300 hover:border-primary-400 hover:bg-gray-50'
-            }`}
-          >
-            <input {...getInputProps()} />
-            <ImageIcon size={48} className="text-gray-400 mb-4" />
-            <p className="text-center text-gray-600 mb-2">
-              Drag & drop a food image here, or click to select
-            </p>
-            <p className="text-center text-gray-500 text-sm mb-4">
-              Supports JPG, PNG images
-            </p>
-            <button 
-              type="button" 
-              className="btn-outline mb-2"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleCapturePhoto();
-              }}
-            >
-              <Camera size={18} className="mr-2" />
-              Take Photo
-            </button>
-          </div>
-        )}
-        
-        <button 
-          className="btn-primary w-full"
-          onClick={handleAnalyzeImage}
-          disabled={!image || analyzing}
-        >
-          {analyzing ? (
-            <>
-              <Loader size={18} className="animate-spin mr-2" />
-              Analyzing Image...
-            </>
-          ) : (
-            <>
-              <Search size={18} className="mr-2" />
-              Analyze & Find Recipes
-            </>
           )}
-        </button>
-      </div>
-      
-      {/* Identified Ingredients */}
-      {identifiedIngredients.length > 0 && (
-        <div className="bg-white rounded-lg shadow-card p-6">
-          <h2 className="text-xl font-semibold mb-4">Identified Ingredients</h2>
-          <div className="flex flex-wrap gap-2">
-            {identifiedIngredients.map((ingredient, index) => (
-              <div 
-                key={index}
-                className="bg-primary-50 rounded-full px-3 py-1 flex items-center text-primary-800"
-              >
-                <span>{ingredient}</span>
+
+          <input
+            type="file"
+            ref={fileInputRef}
+            className="hidden"
+            accept="image/*"
+            onChange={handleFileChange}
+          />
+
+          {isCameraActive && (
+            <div className="relative">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                className="w-full rounded-lg"
+              />
+              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-4">
+                <button
+                  onClick={captureImage}
+                  className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark"
+                >
+                  Capture
+                </button>
+                <button
+                  onClick={stopCamera}
+                  className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-      
-      {/* Recipe Results */}
-      {identifiedIngredients.length > 0 && (
-        <div>
-          <h2 className="text-2xl font-semibold mb-4">Recipe Matches</h2>
-          {loading ? (
-            <div className="text-center py-8">
-              <div className="animate-pulse text-primary-500">
-                <div className="flex justify-center">
-                  <div className="w-16 h-16 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-                </div>
-              </div>
-              <p className="mt-4 text-gray-600">Finding the perfect recipes...</p>
             </div>
-          ) : (
-            <RecipeGrid 
-              recipes={searchResults} 
-              emptyMessage="No recipes found with these ingredients. Try a different image!" 
-            />
+          )}
+
+          {image && (
+            <div className="relative">
+              <img src={image} alt="Selected" className="w-full rounded-lg" />
+              <button
+                onClick={() => setImage(null)}
+                className="absolute top-2 right-2 p-1 bg-gray-800/50 text-white rounded-full hover:bg-gray-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {image && !isProcessing && (
+            <button
+              onClick={processImage}
+              className="w-full mt-4 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark"
+            >
+              Process Image
+            </button>
+          )}
+
+          {isProcessing && (
+            <div className="flex items-center justify-center mt-4">
+              <Loader2 className="w-6 h-6 animate-spin text-primary" />
+              <span className="ml-2">Processing image...</span>
+            </div>
           )}
         </div>
-      )}
+      </motion.div>
     </div>
   );
 };
