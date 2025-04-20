@@ -1,107 +1,195 @@
 import React, { useEffect, useState } from 'react';
-import { Search, ChefHat, ArrowRight } from 'lucide-react';
+import { Search, ChefHat, ArrowRight, Clock, Bookmark, Loader2, Heart, BookOpen } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useRecipeStore } from '../store/recipeStore';
-import RecipeGrid from '../components/recipes/RecipeGrid';
+import { motion, AnimatePresence } from 'framer-motion';
+import RecipeCard from '../components/recipes/RecipeCard';
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1
+    }
+  }
+};
+
+const itemVariants = {
+  hidden: { y: 20, opacity: 0 },
+  visible: {
+    y: 0,
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 100
+    }
+  }
+};
+
+const featureVariants = {
+  hidden: { scale: 0.8, opacity: 0 },
+  visible: {
+    scale: 1,
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 100
+    }
+  }
+};
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { savedRecipes, fetchSavedRecipes, searchRecipes, searchResults, loading } = useRecipeStore();
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     fetchSavedRecipes();
   }, [fetchSavedRecipes]);
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (searchQuery.trim()) {
-      searchRecipes(searchQuery);
-    }
+    setIsLoading(true);
+    // Simulate search delay
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    setIsLoading(false);
+    navigate(`/search?q=${encodeURIComponent(searchQuery)}`);
   };
 
   const features = [
     {
       title: 'Ingredient Search',
       description: 'Find recipes using ingredients you already have',
-      icon: <Search size={24} className="text-primary-500" />,
-      path: '/ingredient-search'
+      icon: <Search size={24} className="text-primary-600" />,
+      path: '/ingredient-search',
+      bgColor: 'bg-primary-50',
+      hoverBgColor: 'group-hover:bg-primary-100',
+      gradient: 'from-primary-500/10 to-primary-500/5'
     },
     {
       title: 'Snap & Cook',
       description: 'Take a photo of your ingredients to generate recipe ideas',
-      icon: <ChefHat size={24} className="text-primary-500" />,
-      path: '/image-recognition'
+      icon: <ChefHat size={24} className="text-secondary-600" />,
+      path: '/image-recognition',
+      bgColor: 'bg-secondary-50',
+      hoverBgColor: 'group-hover:bg-secondary-100',
+      gradient: 'from-secondary-500/10 to-secondary-500/5'
     },
     {
       title: 'Leftover Magic',
       description: 'Turn your random leftovers into delicious meals',
-      icon: <ArrowRight size={24} className="text-primary-500" />,
-      path: '/leftover-magic'
+      icon: <ArrowRight size={24} className="text-primary-600" />,
+      path: '/leftover-magic',
+      bgColor: 'bg-primary-50',
+      hoverBgColor: 'group-hover:bg-primary-100',
+      gradient: 'from-primary-500/10 to-primary-500/5'
     }
   ];
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-gray-800">Welcome to Pantry Chef</h1>
-        <p className="text-gray-600 mt-2">Find recipes based on what you already have in your kitchen</p>
-      </div>
-      
-      {/* Search Bar */}
-      <div className="bg-white rounded-lg shadow-card p-6">
-        <form onSubmit={handleSearchSubmit} className="flex gap-2">
-          <input
-            type="text"
-            className="input flex-grow"
-            placeholder="Search recipes by name, ingredient, or cuisine..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-          <button type="submit" className="btn-primary">
-            <Search size={18} className="mr-2" />
-            Search
-          </button>
-        </form>
-      </div>
-      
-      {/* Quick Access Features */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {features.map((feature, index) => (
-          <div 
-            key={index}
-            className="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow cursor-pointer"
-            onClick={() => navigate(feature.path)}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <div className="bg-primary-50 rounded-full p-3">
-                {feature.icon}
-              </div>
-              <ArrowRight size={18} className="text-gray-400" />
-            </div>
-            <h3 className="font-semibold text-lg mb-2">{feature.title}</h3>
-            <p className="text-gray-600 text-sm">{feature.description}</p>
+    <div className="w-full max-w-4xl mx-auto px-4 py-8">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
+        <h1 className="text-4xl font-bold mb-8">Welcome to MealPlanner</h1>
+        
+        <form onSubmit={handleSearch} className="relative mb-12">
+          <div className="relative">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search for recipes..."
+              className="w-full px-4 py-3 pl-12 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+            />
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+            {isLoading && (
+              <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-primary" size={20} />
+            )}
           </div>
-        ))}
-      </div>
-      
-      {/* Search Results (if any) */}
-      {searchResults.length > 0 && (
-        <div>
-          <h2 className="text-2xl font-semibold mb-4">Search Results</h2>
-          <RecipeGrid recipes={searchResults} emptyMessage="No recipes found for your search" />
-        </div>
-      )}
-      
-      {/* Saved Recipes */}
-      <div>
-        <h2 className="text-2xl font-semibold mb-4">Your Saved Recipes</h2>
-        <RecipeGrid 
-          recipes={savedRecipes} 
-          emptyMessage="You haven't saved any recipes yet. Start searching to discover delicious meals!" 
-        />
-      </div>
+        </form>
+
+        <motion.div 
+          className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.2, duration: 0.5 }}
+        >
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer"
+            onClick={() => navigate('/recipes')}
+          >
+            <ChefHat className="w-8 h-8 text-primary mb-4" />
+            <h3 className="font-semibold mb-2">Browse Recipes</h3>
+            <p className="text-gray-600 text-sm">Explore our collection of delicious recipes</p>
+          </motion.div>
+
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer"
+            onClick={() => navigate('/meal-planner')}
+          >
+            <Clock className="w-8 h-8 text-primary mb-4" />
+            <h3 className="font-semibold mb-2">Meal Planning</h3>
+            <p className="text-gray-600 text-sm">Plan your meals for the week ahead</p>
+          </motion.div>
+
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer"
+            onClick={() => navigate('/saved')}
+          >
+            <Heart className="w-8 h-8 text-primary mb-4" />
+            <h3 className="font-semibold mb-2">Saved Recipes</h3>
+            <p className="text-gray-600 text-sm">Access your favorite recipes quickly</p>
+          </motion.div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4, duration: 0.5 }}
+        >
+          <h2 className="text-2xl font-semibold mb-6">Your Saved Recipes</h2>
+          <AnimatePresence>
+            {savedRecipes.length > 0 ? (
+              <motion.div 
+                className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                {savedRecipes.map((recipe) => (
+                  <motion.div
+                    key={recipe.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    whileHover={{ scale: 1.02 }}
+                  >
+                    <RecipeCard recipe={recipe} />
+                  </motion.div>
+                ))}
+              </motion.div>
+            ) : (
+              <motion.p 
+                className="text-gray-500 text-center py-8"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                No saved recipes yet. Start exploring to save your favorites!
+              </motion.p>
+            )}
+          </AnimatePresence>
+        </motion.div>
+      </motion.div>
     </div>
   );
 };

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { supabase, signInWithOTP, signOut, getCurrentUser } from '../lib/supabase';
 import { User, AuthState } from '../types';
+import { supabase } from '../lib/supabase';
 
 interface AuthStore {
   user: User | null;
@@ -18,13 +18,18 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
   signIn: async (email: string) => {
     try {
-      const { error } = await signInWithOTP(email);
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
       
       if (error) {
         set({ error: error.message });
         return { success: false, error: error.message };
       }
-      
+
       return { success: true, error: null };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to sign in';
@@ -34,28 +39,38 @@ export const useAuthStore = create<AuthStore>((set) => ({
   },
 
   logout: async () => {
-    await signOut();
-    set({ user: null, authState: 'UNAUTHENTICATED', error: null });
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      set({ user: null, authState: 'UNAUTHENTICATED', error: null });
+    } catch (error) {
+      console.error('Logout error:', error);
+      set({ user: null, authState: 'UNAUTHENTICATED', error: null });
+    }
   },
 
   checkAuth: async () => {
     try {
-      const { user, error } = await getCurrentUser();
+      const { data: { user }, error } = await supabase.auth.getUser();
       
-      if (error || !user) {
-        set({ user: null, authState: 'UNAUTHENTICATED', error: error?.message || null });
+      if (error) {
+        set({ user: null, authState: 'UNAUTHENTICATED', error: error.message });
         return;
       }
-      
-      set({ 
-        user: { 
-          id: user.id, 
-          email: user.email || undefined,
-          phone: user.phone || undefined
-        }, 
-        authState: 'AUTHENTICATED', 
-        error: null 
-      });
+
+      if (user) {
+        set({ 
+          user: { 
+            id: user.id, 
+            email: user.email || undefined,
+            phone: user.phone || undefined
+          }, 
+          authState: 'AUTHENTICATED', 
+          error: null 
+        });
+      } else {
+        set({ user: null, authState: 'UNAUTHENTICATED', error: null });
+      }
     } catch (error) {
       set({ 
         user: null, 
@@ -65,12 +80,3 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }
   }
 }));
-
-// Subscribe to auth changes
-supabase.auth.onAuthStateChange((event, session) => {
-  if (event === 'SIGNED_IN' && session?.user) {
-    useAuthStore.getState().checkAuth();
-  } else if (event === 'SIGNED_OUT') {
-    useAuthStore.setState({ user: null, authState: 'UNAUTHENTICATED' });
-  }
-});

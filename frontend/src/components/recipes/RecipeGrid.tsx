@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { ReactNode } from 'react';
 import RecipeCard from './RecipeCard';
 import { Recipe } from '../../types';
 
 interface RecipeGridProps {
   recipes: Recipe[];
-  emptyMessage?: string;
+  emptyMessage?: string | ReactNode;
   showSaveButton?: boolean;
 }
 
@@ -15,8 +15,12 @@ const RecipeGrid: React.FC<RecipeGridProps> = ({
 }) => {
   if (recipes.length === 0) {
     return (
-      <div className="text-center py-12">
-        <p className="text-gray-500">{emptyMessage}</p>
+      <div className="bg-white rounded-xl shadow-sm p-8 text-center">
+        {typeof emptyMessage === 'string' ? (
+          <p className="text-neutral-500">{emptyMessage}</p>
+        ) : (
+          emptyMessage
+        )}
       </div>
     );
   }

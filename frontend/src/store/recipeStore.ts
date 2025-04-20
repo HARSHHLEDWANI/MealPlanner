@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Recipe } from '../types';
 import { supabase } from '../lib/supabase';
+import { generateRecipesFromIngredients, enhanceRecipeWithAI } from '../lib/recipeAI';
 
 interface RecipeState {
   recipes: Recipe[];
@@ -14,6 +15,7 @@ interface RecipeState {
   searchByIngredients: (ingredients: string[]) => Promise<void>;
   saveRecipe: (recipeId: string) => Promise<void>;
   unsaveRecipe: (recipeId: string) => Promise<void>;
+  getRecipeDetails: (recipeId: string) => Promise<Recipe | null>;
 }
 
 export const useRecipeStore = create<RecipeState>((set, get) => ({
@@ -32,7 +34,15 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
 
       if (error) throw error;
       
-      set({ recipes: data as Recipe[], loading: false });
+      // Ensure all recipes have the required properties
+      const formattedRecipes = (data as Recipe[]).map(recipe => ({
+        ...recipe,
+        ingredients: recipe.ingredients || [],
+        instructions: recipe.instructions || [],
+        saved: false
+      }));
+      
+      set({ recipes: formattedRecipes, loading: false });
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'Failed to fetch recipes', 
@@ -61,10 +71,14 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
           
         if (recipesError) throw recipesError;
         
-        set({ 
-          savedRecipes: (recipesData as Recipe[]).map(recipe => ({ ...recipe, saved: true })), 
-          loading: false 
-        });
+        const formattedRecipes = (recipesData as Recipe[]).map(recipe => ({
+          ...recipe,
+          ingredients: recipe.ingredients || [],
+          instructions: recipe.instructions || [],
+          saved: true
+        }));
+        
+        set({ savedRecipes: formattedRecipes, loading: false });
       } else {
         set({ savedRecipes: [], loading: false });
       }
@@ -79,8 +93,6 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
   searchRecipes: async (query: string) => {
     set({ loading: true });
     try {
-      // In a real app, you might use a more sophisticated search
-      // For now, we'll just filter the recipes we have
       const { data, error } = await supabase
         .from('recipes')
         .select('*')
@@ -91,7 +103,14 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
 
       if (error) throw error;
       
-      set({ searchResults: data as Recipe[], loading: false });
+      const formattedRecipes = (data as Recipe[]).map(recipe => ({
+        ...recipe,
+        ingredients: recipe.ingredients || [],
+        instructions: recipe.instructions || [],
+        saved: false
+      }));
+      
+      set({ searchResults: formattedRecipes, loading: false });
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'Failed to search recipes', 
@@ -104,23 +123,22 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
   searchByIngredients: async (ingredients: string[]) => {
     set({ loading: true });
     try {
-      // In the real app, you would use an AI service here
-      // For now, we'll just simulate with a basic filter
+      // Use AI to generate recipes based on ingredients
+      const generatedRecipes = await generateRecipesFromIngredients(ingredients);
+      
+      // Store generated recipes in Supabase for future reference
       const { data, error } = await supabase
         .from('recipes')
-        .select('*');
+        .insert(generatedRecipes.map(recipe => ({
+          ...recipe,
+          user_generated: true,
+          created_at: new Date().toISOString()
+        })))
+        .select();
 
       if (error) throw error;
       
-      // Simple simulation of ingredient matching
-      const filteredRecipes = (data as Recipe[]).filter(recipe => {
-        const recipeIngredients = recipe.ingredients.map(i => i.name.toLowerCase());
-        return ingredients.some(ing => 
-          recipeIngredients.some(ri => ri.includes(ing.toLowerCase()))
-        );
-      });
-      
-      set({ searchResults: filteredRecipes, loading: false });
+      set({ searchResults: data as Recipe[], loading: false });
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'Failed to search by ingredients', 
@@ -175,6 +193,29 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
       set({ 
         error: error instanceof Error ? error.message : 'Failed to unsave recipe' 
       });
+    }
+  },
+
+  getRecipeDetails: async (recipeId: string): Promise<Recipe | null> => {
+    try {
+      const { data, error } = await supabase
+        .from('recipes')
+        .select('*')
+        .eq('id', recipeId)
+        .single();
+
+      if (error) throw error;
+      if (!data) return null;
+
+      return {
+        ...data,
+        ingredients: data.ingredients || [],
+        instructions: data.instructions || [],
+        saved: false
+      } as Recipe;
+    } catch (error) {
+      console.error('Error fetching recipe details:', error);
+      return null;
     }
   }
 }));
