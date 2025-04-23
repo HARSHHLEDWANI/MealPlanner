@@ -27,7 +27,7 @@ const MainLayout: React.FC = () => {
 
   const menuItems = [
     { to: '/dashboard', label: 'Dashboard', icon: <Home size={20} /> },
-    { to: '/ingredient-search', label: 'Ingredient Search', icon: <Search size={20} /> },
+    { to: '/recipe-finder', label: 'Recipe Finder', icon: <Search size={20} /> },
     { to: '/image-recognition', label: 'Snap & Cook', icon: <Camera size={20} /> },
     { to: '/meal-planner', label: 'Meal Planner', icon: <Calendar size={20} /> },
     { to: '/grocery-list', label: 'Grocery List', icon: <ShoppingCart size={20} /> },

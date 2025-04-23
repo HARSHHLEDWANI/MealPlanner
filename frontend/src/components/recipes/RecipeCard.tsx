@@ -59,7 +59,7 @@ const RecipeCard: React.FC<RecipeCardProps> = ({ recipe, showSaveButton = true }
         <div className="flex items-center text-sm text-neutral-500 mb-4">
           <div className="flex items-center mr-4">
             <Clock size={16} className="mr-1.5 text-primary-500" />
-            <span>{recipe.prep_time + recipe.cook_time} min</span>
+            <span>{recipe.prepTime + recipe.cookTime} min</span>
           </div>
           <div className="flex items-center">
             <Users size={16} className="mr-1.5 text-primary-500" />

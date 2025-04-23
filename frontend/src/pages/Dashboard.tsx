@@ -39,12 +39,19 @@ const featureVariants = {
   }
 };
 
+const LoadingSpinner: React.FC = () => (
+  <div className="flex justify-center items-center p-8">
+    <Loader2 className="w-8 h-8 animate-spin text-primary" />
+  </div>
+);
+
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { savedRecipes, fetchSavedRecipes, searchRecipes, searchResults, loading } = useRecipeStore();
+  const { savedRecipes, fetchSavedRecipes, searchRecipes, searchResults, loading: storeLoading } = useRecipeStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchSavedRecipes();
@@ -52,11 +59,42 @@ const Dashboard: React.FC = () => {
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true);
-    // Simulate search delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    navigate(`/search?q=${encodeURIComponent(searchQuery)}`);
+    if (!searchQuery.trim()) return;
+    
+    setIsSearching(true);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 800));
+      navigate(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
+    } catch (error) {
+      console.error('Search error:', error);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadError(null);
+
+    try {
+      // Validate file type and size
+      if (!file.type.startsWith('image/')) {
+        throw new Error('Please upload an image file');
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('Image size should be less than 5MB');
+      }
+
+      // Navigate to image recognition page with the file
+      navigate('/image-recognition', { state: { imageFile: file } });
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Failed to upload image');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const features = [
@@ -106,9 +144,10 @@ const Dashboard: React.FC = () => {
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search for recipes..."
               className="w-full px-4 py-3 pl-12 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+              disabled={isSearching}
             />
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-            {isLoading && (
+            {isSearching && (
               <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-primary" size={20} />
             )}
           </div>
@@ -116,68 +155,52 @@ const Dashboard: React.FC = () => {
 
         <motion.div 
           className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.2, duration: 0.5 }}
+          variants={containerVariants}
+          initial="hidden"
+          animate="visible"
         >
-          <motion.div
-            whileHover={{ scale: 1.02 }}
-            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer"
-            onClick={() => navigate('/recipes')}
-          >
-            <ChefHat className="w-8 h-8 text-primary mb-4" />
-            <h3 className="font-semibold mb-2">Browse Recipes</h3>
-            <p className="text-gray-600 text-sm">Explore our collection of delicious recipes</p>
-          </motion.div>
-
-          <motion.div
-            whileHover={{ scale: 1.02 }}
-            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer"
-            onClick={() => navigate('/meal-planner')}
-          >
-            <Clock className="w-8 h-8 text-primary mb-4" />
-            <h3 className="font-semibold mb-2">Meal Planning</h3>
-            <p className="text-gray-600 text-sm">Plan your meals for the week ahead</p>
-          </motion.div>
-
-          <motion.div
-            whileHover={{ scale: 1.02 }}
-            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer"
-            onClick={() => navigate('/saved')}
-          >
-            <Heart className="w-8 h-8 text-primary mb-4" />
-            <h3 className="font-semibold mb-2">Saved Recipes</h3>
-            <p className="text-gray-600 text-sm">Access your favorite recipes quickly</p>
-          </motion.div>
-
-          <motion.div
-            whileHover={{ scale: 1.02 }}
-            className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer relative group"
-            onClick={() => document.getElementById('imageInput')?.click()}
-          >
-            <input
-              type="file"
-              id="imageInput"
-              className="hidden"
-              accept="image/*"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  // Handle the selected file
-                  navigate('/image-recognition', { state: { imageFile: file } });
+          {features.map((feature, index) => (
+            <motion.div
+              key={feature.title}
+              variants={featureVariants}
+              whileHover={{ scale: 1.02 }}
+              className={`bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-all cursor-pointer group ${
+                feature.title === 'Snap & Cook' ? 'relative' : ''
+              }`}
+              onClick={() => {
+                if (feature.title === 'Snap & Cook') {
+                  document.getElementById('imageInput')?.click();
+                } else {
+                  navigate(feature.path);
                 }
               }}
-            />
-            <div className="flex items-center justify-between mb-4">
-              <ChefHat className="w-8 h-8 text-secondary-600" />
-              <div className="absolute right-4 top-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <Camera className="w-5 h-5 text-gray-500" />
-                <Upload className="w-5 h-5 text-gray-500" />
+            >
+              {feature.title === 'Snap & Cook' && (
+                <input
+                  type="file"
+                  id="imageInput"
+                  className="hidden"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  disabled={isUploading}
+                />
+              )}
+              <div className="flex items-center justify-between mb-4">
+                {feature.icon}
+                {feature.title === 'Snap & Cook' && (
+                  <div className="absolute right-4 top-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Camera className="w-5 h-5 text-gray-500" />
+                    <Upload className="w-5 h-5 text-gray-500" />
+                  </div>
+                )}
               </div>
-            </div>
-            <h3 className="font-semibold mb-2">Snap & Cook</h3>
-            <p className="text-gray-600 text-sm">Take a photo or upload an image of your ingredients to generate recipe ideas</p>
-          </motion.div>
+              <h3 className="font-semibold mb-2">{feature.title}</h3>
+              <p className="text-gray-600 text-sm">{feature.description}</p>
+              {feature.title === 'Snap & Cook' && uploadError && (
+                <p className="text-red-500 text-xs mt-2">{uploadError}</p>
+              )}
+            </motion.div>
+          ))}
         </motion.div>
 
         <motion.div
@@ -186,35 +209,37 @@ const Dashboard: React.FC = () => {
           transition={{ delay: 0.4, duration: 0.5 }}
         >
           <h2 className="text-2xl font-semibold mb-6">Your Saved Recipes</h2>
-          <AnimatePresence>
-            {savedRecipes.length > 0 ? (
+          <AnimatePresence mode="wait">
+            {storeLoading ? (
+              <LoadingSpinner />
+            ) : savedRecipes.length > 0 ? (
               <motion.div 
                 className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
+                variants={containerVariants}
+                initial="hidden"
+                animate="visible"
+                exit="hidden"
               >
                 {savedRecipes.map((recipe) => (
                   <motion.div
                     key={recipe.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    whileHover={{ scale: 1.02 }}
+                    variants={itemVariants}
+                    layout
                   >
                     <RecipeCard recipe={recipe} />
                   </motion.div>
                 ))}
               </motion.div>
             ) : (
-              <motion.p 
-                className="text-gray-500 text-center py-8"
+              <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
+                className="text-center py-12 bg-gray-50 rounded-lg"
               >
-                No saved recipes yet. Start exploring to save your favorites!
-              </motion.p>
+                <BookOpen className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-gray-600">No saved recipes yet. Start exploring to save your favorites!</p>
+              </motion.div>
             )}
           </AnimatePresence>
         </motion.div>

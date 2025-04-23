@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { Recipe } from '../types';
-import { supabase } from '../lib/supabase';
-import { generateRecipesFromIngredients, enhanceRecipeWithAI } from '../lib/openai';
+import api from '../lib/api';
 
 interface RecipeState {
   recipes: Recipe[];
@@ -11,8 +10,7 @@ interface RecipeState {
   error: string | null;
   fetchRecipes: () => Promise<void>;
   fetchSavedRecipes: () => Promise<void>;
-  searchRecipes: (query: string) => Promise<void>;
-  searchByIngredients: (ingredients: string[]) => Promise<void>;
+  searchRecipes: (params: { query: string; cuisine?: string }) => Promise<void>;
   saveRecipe: (recipeId: string) => Promise<void>;
   unsaveRecipe: (recipeId: string) => Promise<void>;
   getRecipeDetails: (recipeId: string) => Promise<Recipe | null>;
@@ -27,230 +25,108 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
   error: null,
 
   fetchRecipes: async () => {
-    set({ loading: true });
+    set({ loading: true, error: null });
     try {
-      const { data, error } = await supabase
-        .from('recipes')
-        .select('*');
-
-      if (error) throw error;
-      
-      const formattedRecipes = (data as Recipe[]).map(recipe => ({
-        ...recipe,
-        ingredients: recipe.ingredients || [],
-        instructions: recipe.instructions || [],
-        saved: false
-      }));
-      
-      set({ recipes: formattedRecipes, loading: false });
+      const response = await api.get<Recipe[]>('/api/recipes');
+      set({ recipes: response.data, loading: false });
     } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to fetch recipes', 
-        loading: false 
-      });
+      set({ error: 'Failed to fetch recipes', loading: false });
+      console.error('Error fetching recipes:', error);
     }
   },
 
   fetchSavedRecipes: async () => {
-    set({ loading: true });
+    set({ loading: true, error: null });
     try {
-      const { data, error } = await supabase
-        .from('saved_recipes')
-        .select('recipe_id')
-        .eq('user_id', (await supabase.auth.getUser()).data.user?.id);
-
-      if (error) throw error;
-      
-      if (data.length > 0) {
-        const recipeIds = data.map(item => item.recipe_id);
-        const { data: recipesData, error: recipesError } = await supabase
-          .from('recipes')
-          .select('*')
-          .in('id', recipeIds);
-          
-        if (recipesError) throw recipesError;
-        
-        const formattedRecipes = (recipesData as Recipe[]).map(recipe => ({
-          ...recipe,
-          ingredients: recipe.ingredients || [],
-          instructions: recipe.instructions || [],
-          saved: true
-        }));
-        
-        set({ savedRecipes: formattedRecipes, loading: false });
-      } else {
-        set({ savedRecipes: [], loading: false });
-      }
+      const response = await api.get<Recipe[]>('/api/recipes/saved');
+      set({ savedRecipes: response.data, loading: false });
     } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to fetch saved recipes', 
-        loading: false 
-      });
+      set({ error: 'Failed to fetch saved recipes', loading: false });
+      console.error('Error fetching saved recipes:', error);
     }
   },
 
-  searchRecipes: async (query: string) => {
-    set({ loading: true });
+  searchRecipes: async ({ query, cuisine }) => {
+    set({ loading: true, error: null });
     try {
-      const { data, error } = await supabase
-        .from('recipes')
-        .select('*')
-        .textSearch('title', query, { 
-          type: 'websearch',
-          config: 'english' 
-        });
-
-      if (error) throw error;
+      // Get the user ID from localStorage or your auth store
+      const userId = localStorage.getItem('userId') || 'default'; // Replace with your actual user ID retrieval
       
-      const formattedRecipes = (data as Recipe[]).map(recipe => ({
-        ...recipe,
-        ingredients: recipe.ingredients || [],
-        instructions: recipe.instructions || [],
-        saved: false
-      }));
-      
-      set({ searchResults: formattedRecipes, loading: false });
-    } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to search recipes', 
-        loading: false,
-        searchResults: []
+      // Use the AI endpoint to generate a recipe
+      const response = await api.post(`/api/ai/recipe/generate/${userId}`, {
+        query,
+        cuisine: cuisine || undefined
       });
-    }
-  },
 
-  searchByIngredients: async (ingredients: string[]) => {
-    set({ loading: true });
-    try {
-      // Use AI to generate recipes based on ingredients
-      const generatedRecipes = await generateRecipesFromIngredients(ingredients);
-      
-      // Store generated recipes in Supabase for future reference
-      const { data, error } = await supabase
-        .from('recipes')
-        .insert(generatedRecipes.map(recipe => ({
-          ...recipe,
-          user_generated: true,
-          created_at: new Date().toISOString()
-        })))
-        .select();
-
-      if (error) throw error;
-      
-      set({ searchResults: data as Recipe[], loading: false });
-    } catch (error) {
+      // If successful, set the generated recipe as the search result
       set({ 
-        error: error instanceof Error ? error.message : 'Failed to search by ingredients', 
+        searchResults: Array.isArray(response.data) ? response.data : [response.data], 
         loading: false 
       });
+    } catch (error) {
+      set({ error: 'Failed to search recipes', loading: false });
+      console.error('Error searching recipes:', error);
     }
   },
 
   saveRecipe: async (recipeId: string) => {
+    set({ loading: true, error: null });
     try {
-      const userId = (await supabase.auth.getUser()).data.user?.id;
-      
-      const { error } = await supabase
-        .from('saved_recipes')
-        .insert({ user_id: userId, recipe_id: recipeId });
-
-      if (error) throw error;
-      
-      const { recipes, savedRecipes } = get();
-      const recipe = recipes.find(r => r.id === recipeId);
-      
-      if (recipe) {
-        set({ 
-          savedRecipes: [...savedRecipes, { ...recipe, saved: true }] 
-        });
-      }
+      await api.post(`/api/recipes/save/${recipeId}`);
+      // Refresh saved recipes after saving
+      await get().fetchSavedRecipes();
     } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to save recipe' 
-      });
+      set({ error: 'Failed to save recipe', loading: false });
+      console.error('Error saving recipe:', error);
     }
   },
 
   unsaveRecipe: async (recipeId: string) => {
+    set({ loading: true, error: null });
     try {
-      const userId = (await supabase.auth.getUser()).data.user?.id;
-      
-      const { error } = await supabase
-        .from('saved_recipes')
-        .delete()
-        .match({ user_id: userId, recipe_id: recipeId });
-
-      if (error) throw error;
-      
-      const { savedRecipes } = get();
-      set({ 
-        savedRecipes: savedRecipes.filter(recipe => recipe.id !== recipeId) 
-      });
+      await api.delete(`/api/recipes/save/${recipeId}`);
+      // Refresh saved recipes after unsaving
+      await get().fetchSavedRecipes();
     } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to unsave recipe' 
-      });
+      set({ error: 'Failed to unsave recipe', loading: false });
+      console.error('Error unsaving recipe:', error);
     }
   },
 
   getRecipeDetails: async (recipeId: string): Promise<Recipe | null> => {
+    set({ loading: true, error: null });
     try {
-      const { data, error } = await supabase
-        .from('recipes')
-        .select('*')
-        .eq('id', recipeId)
-        .single();
-
-      if (error) throw error;
-      if (!data) return null;
-
-      return {
-        ...data,
-        ingredients: data.ingredients || [],
-        instructions: data.instructions || [],
-        saved: false
-      } as Recipe;
+      const response = await api.get<Recipe>(`/api/recipes/${recipeId}`);
+      set({ loading: false });
+      return response.data;
     } catch (error) {
+      set({ error: 'Failed to fetch recipe details', loading: false });
       console.error('Error fetching recipe details:', error);
       return null;
     }
   },
 
   enhanceRecipe: async (recipeId: string) => {
+    set({ loading: true, error: null });
     try {
       const recipe = await get().getRecipeDetails(recipeId);
       if (!recipe) throw new Error('Recipe not found');
 
-      const enhancedData = await enhanceRecipeWithAI(recipe);
-      
-      // Update the recipe in Supabase with enhanced data
-      const { error } = await supabase
-        .from('recipes')
-        .update({
-          alternatives: enhancedData.alternatives,
-          tips: enhancedData.tips,
-          serving_suggestions: enhancedData.servingSuggestions,
-          storage_instructions: enhancedData.storageInstructions,
-          nutritional_info: enhancedData.nutritionalInfo,
-          enhanced_at: new Date().toISOString()
-        })
-        .eq('id', recipeId);
-
-      if (error) throw error;
-
-      // Update the local state
-      const { recipes } = get();
-      set({
-        recipes: recipes.map(r => 
-          r.id === recipeId 
-            ? { ...r, ...enhancedData }
-            : r
-        )
+      const response = await api.post<Recipe>(`/api/ai/recipe/enhance/${recipeId}`, {
+        recipe
       });
+
+      // Update the recipe in the recipes array
+      const recipes = get().recipes;
+      const index = recipes.findIndex(r => r.id === recipeId);
+      if (index !== -1) {
+        recipes[index] = response.data;
+        set({ recipes: [...recipes] });
+      }
+      set({ loading: false });
     } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to enhance recipe' 
-      });
+      set({ error: 'Failed to enhance recipe', loading: false });
+      console.error('Error enhancing recipe:', error);
     }
   }
 }));

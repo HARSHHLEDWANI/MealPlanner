@@ -11,7 +11,7 @@ import Loading from './components/common/Loading';
 // Pages
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import IngredientSearch from './pages/IngredientSearch';
+import RecipeFinder from './pages/RecipeFinder';
 import ImageRecognition from './pages/ImageRecognition';
 import MealPlanner from './pages/MealPlanner';
 import GroceryList from './pages/GroceryList';
@@ -42,7 +42,7 @@ function App() {
       <Route element={<ProtectedRoute />}>
         <Route element={<MainLayout />}>
           <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/ingredient-search" element={<IngredientSearch />} />
+          <Route path="/recipe-finder" element={<RecipeFinder />} />
           <Route path="/image-recognition" element={<ImageRecognition />} />
           <Route path="/meal-planner" element={<MealPlanner />} />
           <Route path="/grocery-list" element={<GroceryList />} />
