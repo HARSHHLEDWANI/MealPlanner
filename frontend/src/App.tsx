@@ -18,6 +18,7 @@ import GroceryList from './pages/GroceryList';
 import LeftoverMagic from './pages/LeftoverMagic';
 import RecipeDetails from './pages/RecipeDetails';
 import AuthCallback from './pages/AuthCallback';
+import AIPage from './pages/ai';
 
 function App() {
   const { authState, checkAuth } = useAuthStore();
@@ -47,6 +48,7 @@ function App() {
           <Route path="/meal-planner" element={<MealPlanner />} />
           <Route path="/grocery-list" element={<GroceryList />} />
           <Route path="/leftover-magic" element={<LeftoverMagic />} />
+          <Route path="/ai" element={<AIPage />} />
           <Route path="/recipe/:id" element={<RecipeDetails />} />
         </Route>
       </Route>

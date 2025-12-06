@@ -15,15 +15,9 @@ const RecipeFinder: React.FC = () => {
     'Chinese',
     'Indian',
     'Japanese',
-    'Thai',
     'French',
-    'Mediterranean',
     'American',
-    'Middle Eastern',
-    'Spanish',
-    'Greek',
     'Korean',
-    'Vietnamese'
   ];
 
   const handleSearch = () => {
