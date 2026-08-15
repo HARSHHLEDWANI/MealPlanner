@@ -1,328 +1,219 @@
 import { create } from 'zustand';
-import { GroceryList, GroceryItem, Recipe } from '../types';
-import { supabase } from '../lib/supabase';
-import { v4 as uuidv4 } from 'uuid';
+import type { ShoppingList, ShoppingListItem, ItemCategory } from '@/types';
+import api, { errorMessage } from '@/lib/api';
+
+/**
+ * Shopping list state.
+ *
+ * Like the meal plan store, this previously wrote to Supabase directly from
+ * the browser — against a `grocery_lists` table with a JSONB `items` array
+ * that was a parallel, duplicate implementation of shopping_lists +
+ * shopping_list_items. That table is gone; this now uses the API and the
+ * normalized tables.
+ *
+ * The product still calls this a "grocery list" in the UI. The store and
+ * tables use the API's name, shopping_list.
+ */
 
 interface GroceryListState {
-  groceryLists: GroceryList[];
-  currentList: GroceryList | null;
+  lists: ShoppingList[];
+  currentList: ShoppingList | null;
   loading: boolean;
+  saving: boolean;
   error: string | null;
-  fetchGroceryLists: () => Promise<void>;
-  createGroceryList: (title: string) => Promise<void>;
-  addItem: (name: string, amount: string, unit: string, category?: string) => Promise<void>;
+
+  fetchLists: () => Promise<void>;
+  selectList: (listId: string) => void;
+  createList: (name: string) => Promise<ShoppingList | null>;
+  generateFromMealPlan: (mealPlanId: string) => Promise<ShoppingList | null>;
+  addItem: (ingredient: string, quantity: number, unit: string, category?: ItemCategory) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
   toggleItemChecked: (itemId: string) => Promise<void>;
-  generateFromRecipes: (recipes: Recipe[]) => Promise<void>;
   clearCheckedItems: () => Promise<void>;
+  deleteList: (listId: string) => Promise<void>;
+  clearError: () => void;
+}
+
+/** Strips server-owned fields down to what the API accepts. */
+function toItemPayload(items: ShoppingListItem[]) {
+  return items.map((item) => ({
+    ingredient: item.ingredient,
+    quantity: item.quantity,
+    unit: item.unit,
+    category: item.category,
+    is_checked: item.is_checked,
+  }));
 }
 
 export const useGroceryListStore = create<GroceryListState>((set, get) => ({
-  groceryLists: [],
+  lists: [],
   currentList: null,
   loading: false,
+  saving: false,
   error: null,
 
-  fetchGroceryLists: async () => {
-    set({ loading: true });
-    try {
-      const { data, error } = await supabase
-        .from('grocery_lists')
-        .select('*')
-        .eq('user_id', (await supabase.auth.getUser()).data.user?.id)
-        .order('date_created', { ascending: false });
+  clearError: () => set({ error: null }),
 
-      if (error) throw error;
-      
-      // Parse the items JSON from the database
-      const parsedLists = (data || []).map(list => ({
-        id: list.id,
-        userId: list.user_id,
-        title: list.title,
-        dateCreated: list.date_created,
-        items: JSON.parse(list.items)
-      }));
-      
-      set({ 
-        groceryLists: parsedLists as GroceryList[], 
-        currentList: parsedLists.length > 0 ? parsedLists[0] as GroceryList : null,
-        loading: false 
+  fetchLists: async () => {
+    set({ loading: true, error: null });
+    try {
+      const { data } = await api.get<ShoppingList[]>('/api/shopping-lists');
+      set({
+        lists: data,
+        // Keep the current selection if it still exists, otherwise fall back
+        // to the newest list.
+        currentList:
+          data.find((list) => list.id === get().currentList?.id) ?? data[0] ?? null,
+        loading: false,
       });
     } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to fetch grocery lists', 
-        loading: false 
-      });
+      set({ error: errorMessage(error), loading: false });
     }
   },
 
-  createGroceryList: async (title: string) => {
-    set({ loading: true });
+  selectList: (listId) => {
+    const list = get().lists.find((candidate) => candidate.id === listId);
+    if (list) set({ currentList: list });
+  },
+
+  createList: async (name) => {
+    set({ saving: true, error: null });
     try {
-      const userId = (await supabase.auth.getUser()).data.user?.id;
-      const newListId = uuidv4();
-      const now = new Date().toISOString();
-      
-      const { error } = await supabase
-        .from('grocery_lists')
-        .insert({
-          id: newListId,
-          user_id: userId,
-          title,
-          date_created: now,
-          items: '[]'
+      const { data } = await api.post<ShoppingList>('/api/shopping-lists', { name, items: [] });
+      set({ lists: [data, ...get().lists], currentList: data, saving: false });
+      return data;
+    } catch (error) {
+      set({ error: errorMessage(error), saving: false });
+      return null;
+    }
+  },
+
+  /**
+   * Builds a list from a meal plan's recipes. The API does the aggregating —
+   * it parses each ingredient line and sums quantities per ingredient and unit.
+   */
+  generateFromMealPlan: async (mealPlanId) => {
+    set({ saving: true, error: null });
+    try {
+      const { data } = await api.post<ShoppingList>(`/api/shopping-lists/generate/${mealPlanId}`);
+      set({ lists: [data, ...get().lists], currentList: data, saving: false });
+      return data;
+    } catch (error) {
+      set({ error: errorMessage(error), saving: false });
+      return null;
+    }
+  },
+
+  addItem: async (ingredient, quantity, unit, category = 'Other') => {
+    const list = get().currentList;
+    if (!list) return;
+
+    const nextItems = [
+      ...list.items,
+      { ingredient, quantity, unit, category, is_checked: false } as ShoppingListItem,
+    ];
+
+    await replaceItems(set, get, list.id, nextItems);
+  },
+
+  removeItem: async (itemId) => {
+    const list = get().currentList;
+    if (!list) return;
+
+    await replaceItems(
+      set,
+      get,
+      list.id,
+      list.items.filter((item) => item.id !== itemId)
+    );
+  },
+
+  /**
+   * Checking an item has its own endpoint, so it updates a single row rather
+   * than rewriting the whole list.
+   */
+  toggleItemChecked: async (itemId) => {
+    const list = get().currentList;
+    const item = list?.items.find((candidate) => candidate.id === itemId);
+    if (!list || !item) return;
+
+    const nextChecked = !item.is_checked;
+
+    // Optimistic: ticking a box should feel instant.
+    const applyChecked = (checked: boolean) => (candidate: ShoppingListItem) =>
+      candidate.id === itemId ? { ...candidate, is_checked: checked } : candidate;
+
+    set({
+      currentList: { ...list, items: list.items.map(applyChecked(nextChecked)) },
+    });
+
+    try {
+      await api.put(`/api/shopping-lists/${list.id}/items/${itemId}`, {
+        is_checked: nextChecked,
+      });
+    } catch (error) {
+      // Roll the checkbox back so the UI does not claim a change that failed.
+      const reverted = get().currentList;
+      if (reverted) {
+        set({
+          currentList: { ...reverted, items: reverted.items.map(applyChecked(item.is_checked)) },
+          error: errorMessage(error),
         });
-
-      if (error) throw error;
-      
-      // Update local state
-      const newList = {
-        id: newListId,
-        userId,
-        title,
-        dateCreated: now,
-        items: []
-      };
-      
-      set({
-        groceryLists: [newList, ...get().groceryLists],
-        currentList: newList,
-        loading: false
-      });
-    } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to create grocery list', 
-        loading: false 
-      });
-    }
-  },
-
-  addItem: async (name: string, amount: string, unit: string, category?: string) => {
-    try {
-      const { currentList } = get();
-      if (!currentList) return;
-      
-      const newItem: GroceryItem = {
-        id: uuidv4(),
-        name,
-        amount,
-        unit,
-        checked: false,
-        category
-      };
-      
-      const updatedItems = [...currentList.items, newItem];
-      
-      // Update the database
-      const { error } = await supabase
-        .from('grocery_lists')
-        .update({ items: JSON.stringify(updatedItems) })
-        .eq('id', currentList.id);
-
-      if (error) throw error;
-      
-      // Update local state
-      set({
-        currentList: {
-          ...currentList,
-          items: updatedItems
-        },
-        groceryLists: get().groceryLists.map(list => 
-          list.id === currentList.id 
-            ? { ...list, items: updatedItems } 
-            : list
-        )
-      });
-    } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to add item to grocery list' 
-      });
-    }
-  },
-
-  removeItem: async (itemId: string) => {
-    try {
-      const { currentList } = get();
-      if (!currentList) return;
-      
-      const updatedItems = currentList.items.filter(item => item.id !== itemId);
-      
-      // Update the database
-      const { error } = await supabase
-        .from('grocery_lists')
-        .update({ items: JSON.stringify(updatedItems) })
-        .eq('id', currentList.id);
-
-      if (error) throw error;
-      
-      // Update local state
-      set({
-        currentList: {
-          ...currentList,
-          items: updatedItems
-        },
-        groceryLists: get().groceryLists.map(list => 
-          list.id === currentList.id 
-            ? { ...list, items: updatedItems } 
-            : list
-        )
-      });
-    } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to remove item from grocery list' 
-      });
-    }
-  },
-
-  toggleItemChecked: async (itemId: string) => {
-    try {
-      const { currentList } = get();
-      if (!currentList) return;
-      
-      const updatedItems = currentList.items.map(item => 
-        item.id === itemId ? { ...item, checked: !item.checked } : item
-      );
-      
-      // Update the database
-      const { error } = await supabase
-        .from('grocery_lists')
-        .update({ items: JSON.stringify(updatedItems) })
-        .eq('id', currentList.id);
-
-      if (error) throw error;
-      
-      // Update local state
-      set({
-        currentList: {
-          ...currentList,
-          items: updatedItems
-        },
-        groceryLists: get().groceryLists.map(list => 
-          list.id === currentList.id 
-            ? { ...list, items: updatedItems } 
-            : list
-        )
-      });
-    } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to toggle item checked status' 
-      });
-    }
-  },
-
-  generateFromRecipes: async (recipes: Recipe[]) => {
-    try {
-      // Extract all ingredients from the recipes
-      let allIngredients: { name: string; amount: string; unit: string }[] = [];
-      
-      recipes.forEach(recipe => {
-        recipe.ingredients.forEach(ingredient => {
-          allIngredients.push({
-            name: ingredient.name,
-            amount: ingredient.amount,
-            unit: ingredient.unit
-          });
-        });
-      });
-      
-      // Consolidate ingredients (combine duplicates)
-      const ingredientMap = new Map();
-      
-      allIngredients.forEach(ing => {
-        const key = ing.name.toLowerCase();
-        
-        if (ingredientMap.has(key)) {
-          // For simplicity, we're not trying to convert units or add amounts
-          // In a real app, you would have unit conversion logic here
-          const existing = ingredientMap.get(key);
-          ingredientMap.set(key, {
-            name: ing.name,
-            amount: `${existing.amount} + ${ing.amount}`,
-            unit: ing.unit
-          });
-        } else {
-          ingredientMap.set(key, ing);
-        }
-      });
-      
-      // Create grocery items from the consolidated ingredients
-      const groceryItems: GroceryItem[] = Array.from(ingredientMap.values()).map(ing => ({
-        id: uuidv4(),
-        name: ing.name,
-        amount: ing.amount,
-        unit: ing.unit,
-        checked: false
-      }));
-      
-      // Create a new grocery list
-      const userId = (await supabase.auth.getUser()).data.user?.id;
-      const newListId = uuidv4();
-      const now = new Date().toISOString();
-      const title = `Recipe List ${new Date().toLocaleDateString()}`;
-      
-      const { error } = await supabase
-        .from('grocery_lists')
-        .insert({
-          id: newListId,
-          user_id: userId,
-          title,
-          date_created: now,
-          items: JSON.stringify(groceryItems)
-        });
-
-      if (error) throw error;
-      
-      // Update local state
-      const newList = {
-        id: newListId,
-        userId,
-        title,
-        dateCreated: now,
-        items: groceryItems
-      };
-      
-      set({
-        groceryLists: [newList, ...get().groceryLists],
-        currentList: newList
-      });
-    } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to generate grocery list from recipes' 
-      });
+      }
     }
   },
 
   clearCheckedItems: async () => {
-    try {
-      const { currentList } = get();
-      if (!currentList) return;
-      
-      const updatedItems = currentList.items.filter(item => !item.checked);
-      
-      // Update the database
-      const { error } = await supabase
-        .from('grocery_lists')
-        .update({ items: JSON.stringify(updatedItems) })
-        .eq('id', currentList.id);
+    const list = get().currentList;
+    if (!list) return;
 
-      if (error) throw error;
-      
-      // Update local state
+    await replaceItems(
+      set,
+      get,
+      list.id,
+      list.items.filter((item) => !item.is_checked)
+    );
+  },
+
+  deleteList: async (listId) => {
+    set({ saving: true, error: null });
+    try {
+      await api.delete(`/api/shopping-lists/${listId}`);
+      const remaining = get().lists.filter((list) => list.id !== listId);
       set({
-        currentList: {
-          ...currentList,
-          items: updatedItems
-        },
-        groceryLists: get().groceryLists.map(list => 
-          list.id === currentList.id 
-            ? { ...list, items: updatedItems } 
-            : list
-        )
+        lists: remaining,
+        currentList: get().currentList?.id === listId ? (remaining[0] ?? null) : get().currentList,
+        saving: false,
       });
     } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'Failed to clear checked items' 
-      });
+      set({ error: errorMessage(error), saving: false });
     }
-  }
+  },
 }));
+
+/**
+ * Sends a full item set for a list and stores the server's response.
+ *
+ * Add and remove both go through the API's replace-all update, so they share
+ * this rather than each reimplementing the round trip and state merge.
+ */
+async function replaceItems(
+  set: (partial: Partial<GroceryListState>) => void,
+  get: () => GroceryListState,
+  listId: string,
+  items: ShoppingListItem[]
+) {
+  set({ saving: true, error: null });
+  try {
+    const { data } = await api.put<ShoppingList>(`/api/shopping-lists/${listId}`, {
+      items: toItemPayload(items),
+    });
+    set({
+      currentList: data,
+      lists: get().lists.map((list) => (list.id === listId ? data : list)),
+      saving: false,
+    });
+  } catch (error) {
+    set({ error: errorMessage(error), saving: false });
+  }
+}

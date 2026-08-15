@@ -1,106 +1,172 @@
-import React, { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { 
-  Clock, 
-  Users, 
-  ChefHat, 
-  Bookmark, 
+import {
+  Clock,
+  Users,
+  ChefHat,
+  Bookmark,
   BookmarkCheck,
   ArrowLeft,
-  ShoppingCart
+  Sparkles,
+  Lightbulb,
+  Package,
+  UtensilsCrossed,
 } from 'lucide-react';
-import { useRecipeStore } from '../store/recipeStore';
-import { Recipe } from '../types';
-import { useGroceryListStore } from '../store/groceryListStore';
+import { useRecipeStore } from '@/store/recipeStore';
+import type { Recipe } from '@/types';
+import { Badge, Button, Card, ErrorBanner, ErrorState, Spinner } from '@/components/ui';
 
-const RecipeDetails: React.FC = () => {
+const FALLBACK_IMAGE =
+  'https://images.pexels.com/photos/1435895/pexels-photo-1435895.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2';
+
+const RecipeDetails = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { recipes, savedRecipes, fetchRecipes, fetchSavedRecipes, saveRecipe, unsaveRecipe } = useRecipeStore();
-  const { generateFromRecipes } = useGroceryListStore();
+
+  const { getRecipeDetails, saveRecipe, unsaveRecipe, enhanceRecipe, generating } =
+    useRecipeStore();
+
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      await Promise.all([fetchRecipes(), fetchSavedRecipes()]);
-      setLoading(false);
-    };
-    
-    fetchData();
-  }, [fetchRecipes, fetchSavedRecipes]);
+  /**
+   * Fetches this one recipe by ID.
+   *
+   * The previous version loaded the entire recipe library plus all saved
+   * recipes and searched the arrays client-side, then silently redirected to
+   * the dashboard if it came up empty — so a slow load or a real 404 both just
+   * bounced the user with no explanation.
+   *
+   * `signal` lets the effect abandon a request the user navigated away from,
+   * rather than setting state on a component that is gone.
+   */
+  const load = useCallback(
+    async (signal?: { cancelled: boolean }) => {
+      if (!id) return;
 
-  useEffect(() => {
-    if (!loading && id) {
-      // First check in saved recipes
-      let foundRecipe = savedRecipes.find(r => r.id === id);
-      
-      // If not found, check in all recipes
-      if (!foundRecipe) {
-        foundRecipe = recipes.find(r => r.id === id);
-      }
-      
-      if (foundRecipe) {
-        setRecipe(foundRecipe);
+      // Every state change happens after the await, so the effect below sets
+      // nothing synchronously and cannot cascade a render on mount.
+      const found = await getRecipeDetails(id);
+      if (signal?.cancelled) return;
+
+      if (found) {
+        setRecipe(found);
+        setError(null);
       } else {
-        // Handle recipe not found
-        navigate('/dashboard');
+        setError('We could not find that recipe. It may have been removed.');
       }
-    }
-  }, [id, recipes, savedRecipes, loading, navigate]);
+      setLoading(false);
+    },
+    [id, getRecipeDetails]
+  );
 
-  const handleSaveToggle = () => {
+  useEffect(() => {
+    const signal = { cancelled: false };
+    // `loading` already starts true and every setState in `load` happens after
+    // its first await, so nothing is set synchronously here. The rule cannot
+    // see across the function boundary to confirm that, so it is suppressed
+    // narrowly rather than the effect being restructured around a false report.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [load]);
+
+  const retry = () => {
+    setLoading(true);
+    load();
+  };
+
+  const handleSaveToggle = async () => {
     if (!recipe) return;
-    
-    if (recipe.saved) {
-      unsaveRecipe(recipe.id);
-      setRecipe({ ...recipe, saved: false });
+    const nextSaved = !recipe.saved;
+    setRecipe({ ...recipe, saved: nextSaved });
+
+    try {
+      if (nextSaved) {
+        await saveRecipe(recipe.id);
+      } else {
+        await unsaveRecipe(recipe.id);
+      }
+    } catch {
+      setRecipe({ ...recipe, saved: !nextSaved });
+      setActionError('Could not update your saved recipes. Please try again.');
+    }
+  };
+
+  const handleEnhance = async () => {
+    if (!recipe) return;
+    setActionError(null);
+    const enhanced = await enhanceRecipe(recipe.id);
+    if (enhanced) {
+      setRecipe(enhanced);
     } else {
-      saveRecipe(recipe.id);
-      setRecipe({ ...recipe, saved: true });
+      setActionError('The enhancement did not complete. Please try again.');
     }
   };
 
-  const handleAddToGroceryList = () => {
-    if (!recipe) return;
-    generateFromRecipes([recipe]);
-  };
-
-  if (loading || !recipe) {
+  if (loading) {
     return (
-      <div className="flex justify-center items-center h-96">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary-500"></div>
+      <div className="flex flex-col items-center justify-center py-24 gap-3">
+        <Spinner className="w-8 h-8" />
+        <p className="text-neutral-600">Loading recipe…</p>
       </div>
     );
   }
 
+  if (error || !recipe) {
+    return (
+      <ErrorState
+        title="Recipe not found"
+        message={error ?? 'We could not load that recipe.'}
+        onRetry={retry}
+      />
+    );
+  }
+
+  const totalTime = (recipe.prep_time ?? 0) + (recipe.cook_time ?? 0);
+
   return (
     <div className="space-y-6">
-      {/* Back Button */}
-      <button 
-        className="flex items-center text-gray-600 hover:text-gray-800"
+      <button
         onClick={() => navigate(-1)}
+        className="inline-flex items-center gap-1 text-neutral-600 hover:text-neutral-900 transition-colors"
       >
-        <ArrowLeft size={18} className="mr-1" />
+        <ArrowLeft size={18} aria-hidden />
         Back
       </button>
-      
-      {/* Recipe Header */}
-      <div className="relative h-64 md:h-80 rounded-lg overflow-hidden">
-        <img 
-          src={recipe.image_url || 'https://images.pexels.com/photos/1435895/pexels-photo-1435895.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2'} 
-          alt={recipe.title}
+
+      <div className="relative h-56 sm:h-72 md:h-80 rounded-xl overflow-hidden bg-neutral-100">
+        <img
+          src={recipe.image_url || FALLBACK_IMAGE}
+          alt=""
           className="w-full h-full object-cover"
+          onError={(event) => {
+            const img = event.currentTarget as HTMLImageElement;
+            // Swap once; see RecipeCard for why the guard matters.
+            if (img.dataset.fallbackApplied) return;
+            img.dataset.fallbackApplied = 'true';
+            img.src = FALLBACK_IMAGE;
+          }}
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex items-end">
-          <div className="p-6">
-            <h1 className="text-3xl font-bold text-white mb-2">{recipe.title}</h1>
+        <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent flex items-end">
+          <div className="p-5 sm:p-6">
+            <h1 className="font-display text-2xl sm:text-3xl font-bold text-white mb-2">
+              {recipe.title}
+            </h1>
             <div className="flex flex-wrap gap-2">
-              {recipe.tags.map((tag, index) => (
-                <span 
-                  key={index}
-                  className="bg-white/20 backdrop-blur-sm text-white px-2 py-1 rounded-full text-xs"
+              {recipe.cuisine_type && (
+                <span className="bg-white/20 backdrop-blur-sm text-white px-2.5 py-1 rounded-full text-xs">
+                  {recipe.cuisine_type}
+                </span>
+              )}
+              {(recipe.dietary_tags ?? []).map((tag) => (
+                <span
+                  key={tag}
+                  className="bg-white/20 backdrop-blur-sm text-white px-2.5 py-1 rounded-full text-xs"
                 >
                   {tag}
                 </span>
@@ -109,97 +175,139 @@ const RecipeDetails: React.FC = () => {
           </div>
         </div>
       </div>
-      
-      {/* Recipe Actions */}
-      <div className="flex flex-wrap gap-4">
-        <button 
-          className="btn-primary flex items-center"
-          onClick={handleSaveToggle}
-        >
-          {recipe.saved ? (
-            <>
-              <BookmarkCheck size={18} className="mr-2" />
-              Saved
-            </>
-          ) : (
-            <>
-              <Bookmark size={18} className="mr-2" />
-              Save Recipe
-            </>
-          )}
-        </button>
-        
-        <button 
-          className="btn-secondary flex items-center"
-          onClick={handleAddToGroceryList}
-        >
-          <ShoppingCart size={18} className="mr-2" />
-          Add to Grocery List
-        </button>
+
+      {actionError && <ErrorBanner message={actionError} onDismiss={() => setActionError(null)} />}
+
+      <div className="flex flex-wrap gap-3">
+        <Button onClick={handleSaveToggle} variant={recipe.saved ? 'outline' : 'primary'}>
+          {recipe.saved ? <BookmarkCheck size={16} aria-hidden /> : <Bookmark size={16} aria-hidden />}
+          {recipe.saved ? 'Saved' : 'Save recipe'}
+        </Button>
+        <Button variant="secondary" onClick={handleEnhance} loading={generating}>
+          {!generating && <Sparkles size={16} aria-hidden />}
+          Enhance with AI
+        </Button>
       </div>
-      
-      {/* Recipe Info */}
-      <div className="bg-white rounded-lg shadow-card p-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className="flex items-center">
-            <Clock size={20} className="text-primary-500 mr-3" />
+
+      <Card className="p-6">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 pb-6 border-b border-neutral-200">
+          <div className="flex items-center gap-3">
+            <Clock size={20} className="text-primary-500 shrink-0" aria-hidden />
             <div>
-              <p className="text-sm text-gray-500">Total Time</p>
-              <p className="font-medium">{recipe.prep_time + recipe.cook_time} mins</p>
+              <p className="text-sm text-neutral-500">Total time</p>
+              <p className="font-medium">{totalTime} mins</p>
             </div>
           </div>
-          
-          <div className="flex items-center">
-            <ChefHat size={20} className="text-primary-500 mr-3" />
+          <div className="flex items-center gap-3">
+            <ChefHat size={20} className="text-primary-500 shrink-0" aria-hidden />
             <div>
-              <p className="text-sm text-gray-500">Prep Time</p>
-              <p className="font-medium">{recipe.prep_time} mins</p>
+              <p className="text-sm text-neutral-500">Difficulty</p>
+              <p className="font-medium">{recipe.difficulty}</p>
             </div>
           </div>
-          
-          <div className="flex items-center">
-            <Users size={20} className="text-primary-500 mr-3" />
+          <div className="flex items-center gap-3">
+            <Users size={20} className="text-primary-500 shrink-0" aria-hidden />
             <div>
-              <p className="text-sm text-gray-500">Servings</p>
-              <p className="font-medium">{recipe.serving_size}</p>
+              <p className="text-sm text-neutral-500">Servings</p>
+              <p className="font-medium">{recipe.servings}</p>
             </div>
           </div>
         </div>
-        
-        <p className="text-gray-700 mb-6">{recipe.description}</p>
-        
+
+        {recipe.description && <p className="text-neutral-700 mb-6">{recipe.description}</p>}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {/* Ingredients */}
           <div className="md:col-span-1">
-            <h2 className="text-xl font-semibold mb-4">Ingredients</h2>
-            <ul className="space-y-2">
-              {recipe.ingredients.map((ingredient, index) => (
-                <li key={index} className="flex items-start">
-                  <span className="h-5 w-5 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 text-xs mr-3 mt-0.5">•</span>
-                  <span>
-                    <span className="font-medium">{ingredient.amount} {ingredient.unit}</span> {ingredient.name}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <h2 className="font-display text-lg font-semibold mb-4">Ingredients</h2>
+            {recipe.ingredients.length === 0 ? (
+              <p className="text-sm text-neutral-500">No ingredients listed.</p>
+            ) : (
+              <ul className="space-y-2">
+                {recipe.ingredients.map((ingredient, index) => (
+                  <li key={`${ingredient}-${index}`} className="flex items-start gap-3">
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-primary-500 mt-2 shrink-0"
+                      aria-hidden
+                    />
+                    <span className="text-neutral-700">{ingredient}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          
-          {/* Instructions */}
+
           <div className="md:col-span-2">
-            <h2 className="text-xl font-semibold mb-4">Instructions</h2>
-            <ol className="space-y-4">
-              {recipe.instructions.map((instruction, index) => (
-                <li key={index} className="flex">
-                  <span className="h-6 w-6 rounded-full bg-primary-500 flex items-center justify-center text-white font-medium text-sm mr-3 mt-0.5">
-                    {index + 1}
-                  </span>
-                  <p className="flex-1">{instruction}</p>
-                </li>
-              ))}
-            </ol>
+            <h2 className="font-display text-lg font-semibold mb-4">Instructions</h2>
+            {recipe.instructions.length === 0 ? (
+              <p className="text-sm text-neutral-500">No instructions listed.</p>
+            ) : (
+              <ol className="space-y-4">
+                {recipe.instructions.map((instruction, index) => (
+                  <li key={index} className="flex gap-3">
+                    <span className="h-6 w-6 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium text-xs shrink-0 mt-0.5">
+                      {index + 1}
+                    </span>
+                    <p className="flex-1 text-neutral-700">{instruction}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         </div>
-      </div>
+      </Card>
+
+      {/* Only rendered once an enhancement pass has actually produced content. */}
+      {(recipe.cooking_tips?.length ||
+        recipe.serving_suggestions?.length ||
+        recipe.storage_instructions) && (
+        <Card className="p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <Sparkles size={18} className="text-secondary-600" aria-hidden />
+            <h2 className="font-display text-lg font-semibold">Chef&apos;s notes</h2>
+            <Badge tone="secondary">AI enhanced</Badge>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {recipe.cooking_tips?.length ? (
+              <div>
+                <h3 className="flex items-center gap-2 font-medium text-neutral-800 mb-2">
+                  <Lightbulb size={16} className="text-secondary-600" aria-hidden />
+                  Tips
+                </h3>
+                <ul className="space-y-1.5 text-sm text-neutral-700 list-disc list-inside">
+                  {recipe.cooking_tips.map((tip, index) => (
+                    <li key={index}>{tip}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {recipe.serving_suggestions?.length ? (
+              <div>
+                <h3 className="flex items-center gap-2 font-medium text-neutral-800 mb-2">
+                  <UtensilsCrossed size={16} className="text-secondary-600" aria-hidden />
+                  Serving
+                </h3>
+                <ul className="space-y-1.5 text-sm text-neutral-700 list-disc list-inside">
+                  {recipe.serving_suggestions.map((suggestion, index) => (
+                    <li key={index}>{suggestion}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {recipe.storage_instructions ? (
+              <div>
+                <h3 className="flex items-center gap-2 font-medium text-neutral-800 mb-2">
+                  <Package size={16} className="text-secondary-600" aria-hidden />
+                  Storage
+                </h3>
+                <p className="text-sm text-neutral-700">{recipe.storage_instructions}</p>
+              </div>
+            ) : null}
+          </div>
+        </Card>
+      )}
     </div>
   );
 };

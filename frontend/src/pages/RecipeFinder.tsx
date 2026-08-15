@@ -1,125 +1,157 @@
-import React, { useState } from 'react';
-import { Search } from 'lucide-react';
-import { useRecipeStore } from '../store/recipeStore';
-import RecipeGrid from '../components/recipes/RecipeGrid';
+import { useEffect, useState } from 'react';
+import { Search, Sparkles } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { useRecipeStore } from '@/store/recipeStore';
+import RecipeGrid from '@/components/recipes/RecipeGrid';
+import { Button, Card, ErrorBanner, Input, PageHeader } from '@/components/ui';
+import { QuotaExhausted, UsageMeter } from '@/components/ai/UsageMeter';
+import { useUsageStore } from '@/store/usageStore';
 
-const RecipeFinder: React.FC = () => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [cuisine, setCuisine] = useState('');
-  const { searchRecipes, searchResults, loading } = useRecipeStore();
+const CUISINES = [
+  'Any',
+  'Italian',
+  'Mexican',
+  'Chinese',
+  'Indian',
+  'Japanese',
+  'Thai',
+  'French',
+  'American',
+  'Mediterranean',
+  'Korean',
+];
 
-  const cuisines = [
-    'Any',
-    'Italian',
-    'Mexican',
-    'Chinese',
-    'Indian',
-    'Japanese',
-    'French',
-    'American',
-    'Korean',
-  ];
+/**
+ * Search the recipe library, or generate a new recipe when nothing fits.
+ *
+ * These are deliberately two separate actions. Search previously routed
+ * straight to the AI generation endpoint, so every query silently spent a
+ * billable model call and wrote a new recipe to the database — the user had no
+ * way to just look something up.
+ */
+const RecipeFinder = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [query, setQuery] = useState(searchParams.get('q') ?? '');
+  const [cuisine, setCuisine] = useState('Any');
 
-  const handleSearch = () => {
-    if (searchQuery.trim()) {
-      searchRecipes({
-        query: searchQuery.trim(),
-        cuisine: cuisine === 'Any' ? '' : cuisine
-      });
-    }
+  const {
+    searchResults,
+    searchRecipes,
+    generateRecipe,
+    loading,
+    generating,
+    error,
+    hasSearched,
+    clearError,
+  } = useRecipeStore();
+
+  const exhausted = useUsageStore((state) => state.exhausted);
+
+  // Run the search when arriving with ?q= from the dashboard.
+  useEffect(() => {
+    const initial = searchParams.get('q');
+    if (initial) searchRecipes(initial);
+    // Intentionally only on mount; later edits go through the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSearch = (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setSearchParams({ q: trimmed });
+    searchRecipes(trimmed);
   };
+
+  const handleGenerate = () => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    generateRecipe(trimmed, cuisine === 'Any' ? undefined : cuisine);
+  };
+
+  const busy = loading || generating;
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-800">Recipe Finder</h1>
-        <p className="text-gray-600 mt-2">Discover delicious recipes from around the world</p>
-      </div>
-      
-      <div className="bg-white rounded-lg shadow-card p-6">
-        <h2 className="text-xl font-semibold mb-4">Search for Recipes</h2>
-        
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="search" className="block text-sm font-medium text-gray-700 mb-1">
-              What would you like to cook?
-            </label>
-            <input
-              id="search"
-              type="text"
-              className="input w-full"
-              placeholder="Enter a dish name (e.g., Pad Thai, Lasagna, Butter Chicken)..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleSearch();
-                }
-              }}
-            />
-          </div>
+      <PageHeader
+        title="Recipe Finder"
+        description="Search what we already have, or have a new recipe written for you."
+      />
+
+      <Card className="p-6">
+        <form onSubmit={handleSearch} className="space-y-4">
+          <Input
+            label="What would you like to cook?"
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="e.g. Pad Thai, lasagna, butter chicken"
+            disabled={busy}
+          />
 
           <div>
-            <label htmlFor="cuisine" className="block text-sm font-medium text-gray-700 mb-1">
-              Cuisine Type (Optional)
+            <label htmlFor="cuisine" className="block text-sm font-medium text-neutral-700 mb-1.5">
+              Cuisine <span className="text-neutral-400">(applies when generating)</span>
             </label>
             <select
               id="cuisine"
-              className="input w-full"
               value={cuisine}
-              onChange={(e) => setCuisine(e.target.value)}
+              onChange={(event) => setCuisine(event.target.value)}
+              disabled={busy}
+              className="w-full px-4 py-2.5 rounded-lg border border-neutral-300 bg-white focus:outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500"
             >
-              {cuisines.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+              {CUISINES.map((option) => (
+                <option key={option} value={option}>
+                  {option}
                 </option>
               ))}
             </select>
           </div>
-        </div>
-        
-        <button 
-          className="btn-primary w-full mt-6"
-          onClick={handleSearch}
-          disabled={loading || !searchQuery.trim()}
-        >
-          {loading ? (
-            <span>Searching...</span>
-          ) : (
-            <>
-              <Search size={18} className="mr-2" />
-              Find Recipes
-            </>
-          )}
-        </button>
-      </div>
-      
-      {/* Recipe Results */}
-      <div>
-        <h2 className="text-2xl font-semibold mb-4">Recipe Results</h2>
-        {loading ? (
-          <div className="text-center py-8">
-            <div className="animate-pulse text-primary-500">
-              <div className="flex justify-center">
-                <div className="w-16 h-16 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            </div>
-            <p className="mt-4 text-gray-600">Finding delicious recipes...</p>
+
+          {exhausted && <QuotaExhausted />}
+
+          <div className="flex flex-col sm:flex-row gap-3 pt-1">
+            <Button type="submit" loading={loading} disabled={!query.trim() || busy} fullWidth>
+              {!loading && <Search size={16} aria-hidden />}
+              Search recipes
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleGenerate}
+              loading={generating}
+              // Searching still works with no quota left, so only the generate
+              // action is disabled.
+              disabled={!query.trim() || busy || exhausted}
+              fullWidth
+            >
+              {!generating && <Sparkles size={16} aria-hidden />}
+              Generate with AI
+            </Button>
           </div>
-        ) : (
-          <RecipeGrid 
-            recipes={searchResults} 
-            emptyMessage={
-              !searchQuery.trim()
-                ? "Enter a dish name to find recipes" 
-                : "No recipes found. Try a different search term!"
-            } 
-          />
-        )}
-      </div>
+
+          <UsageMeter />
+        </form>
+      </Card>
+
+      <section>
+        <h2 className="font-display text-xl font-semibold text-neutral-900 mb-5">Results</h2>
+
+        {error && <ErrorBanner message={error} onDismiss={clearError} />}
+
+        <RecipeGrid
+          recipes={searchResults}
+          loading={busy}
+          emptyTitle={hasSearched ? 'No recipes matched that search' : 'Search to get started'}
+          emptyDescription={
+            hasSearched
+              ? 'Try a different term, or generate a new recipe with AI.'
+              : 'Enter a dish above to search the recipe library.'
+          }
+        />
+      </section>
     </div>
   );
 };
 
-export default RecipeFinder; 
+export default RecipeFinder;

@@ -1,49 +1,107 @@
-import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import axios from 'axios';
+import type { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import { supabase } from './supabase';
+import type { ApiErrorBody } from '@/types';
 
-// Get the API URL from environment variables, fallback to localhost if not set
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+/**
+ * The single HTTP client for the API.
+ *
+ * There were previously two patterns: this axios instance, and raw
+ * `fetch('/api/...')` calls in useAI.ts that assumed a dev-server proxy which
+ * was never configured — those requests hit the Vite server and 404'd. Every
+ * call now goes through here.
+ */
 
-// Create axios instance with default config
+// The default matches the backend's own default port. It previously pointed at
+// 5000 while the server listened on 5001, so omitting the env var sent every
+// request into a closed port.
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+
 const api = axios.create({
   baseURL: API_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  headers: { 'Content-Type': 'application/json' },
 });
 
-// Add a request interceptor for authentication
+/**
+ * A failed API call, normalized.
+ *
+ * The backend's error handler returns a consistent
+ * `{ error: { code, message, details } }` envelope; this surfaces it so
+ * callers can branch on `code` and show `message` directly instead of digging
+ * through the axios error shape.
+ */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+    public readonly details?: Array<{ path: string; message: string }>
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+
+  /** True when the caller has exhausted a rate limit or usage quota. */
+  get isLimited() {
+    return this.status === 429 || this.code === 'QUOTA_EXCEEDED';
+  }
+}
+
+/**
+ * Attaches the Supabase access token to every request.
+ *
+ * The backend verifies this on all /api routes. `getSession()` refreshes an
+ * expired token transparently, so this stays valid across long sessions.
+ */
 api.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
-    // You can add auth headers here if needed
+  async (config: InternalAxiosRequestConfig) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+
+    if (token) {
+      config.headers.set('Authorization', `Bearer ${token}`);
+    }
+
     return config;
   },
-  (error: AxiosError) => {
-    return Promise.reject(error);
-  }
+  (error: AxiosError) => Promise.reject(error)
 );
 
-// Add a response interceptor for error handling
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
-  (error: AxiosError) => {
-    if (error.response) {
-      // Handle specific error codes
-      switch (error.response.status) {
-        case 401:
-          // Handle unauthorized
-          break;
-        case 404:
-          console.error('Resource not found:', error.config?.url);
-          break;
-        case 500:
-          console.error('Server error:', error.response.data);
-          break;
-        default:
-          console.error('API error:', error.response.data);
-      }
+  async (error: AxiosError<ApiErrorBody>) => {
+    if (!error.response) {
+      // No response at all — the API is unreachable, not returning an error.
+      return Promise.reject(
+        new ApiError(0, 'NETWORK_ERROR', 'Could not reach the server. Check your connection.')
+      );
     }
-    return Promise.reject(error);
+
+    const { status, data } = error.response;
+    const body = data?.error;
+
+    // An expired or revoked session: clear it so the app returns to sign-in
+    // rather than looping on requests that will keep failing.
+    if (status === 401) {
+      await supabase.auth.signOut().catch(() => undefined);
+    }
+
+    return Promise.reject(
+      new ApiError(
+        status,
+        body?.code ?? 'UNKNOWN',
+        body?.message ?? 'Something went wrong. Please try again.',
+        body?.details
+      )
+    );
   }
 );
 
-export default api; 
+/** Extracts a displayable message from anything thrown by an API call. */
+export function errorMessage(error: unknown): string {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof Error) return error.message;
+  return 'Something went wrong. Please try again.';
+}
+
+export default api;

@@ -1,77 +1,148 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Camera, Upload, X, Loader2 } from 'lucide-react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Camera, Upload, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import api, { errorMessage } from '@/lib/api';
+import type { DetectedIngredient } from '@/types';
+import { Badge, Button, Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui';
+import { QuotaExhausted, UsageMeter } from '@/components/ai/UsageMeter';
+import { handleQuotaError, useUsageStore } from '@/store/usageStore';
 
-const ImageRecognition: React.FC = () => {
-  const location = useLocation();
+/**
+ * Snap & Cook — photograph ingredients and find recipes that use them.
+ *
+ * This screen used to be a facade: the camera and upload worked, but
+ * processImage() waited two seconds and returned a hardcoded
+ * ['tomato', 'onion', 'garlic'] no matter what was photographed. It now posts
+ * the image to /api/images/analyze, which runs it through Gemini vision.
+ */
+const ImageRecognition = () => {
   const navigate = useNavigate();
   const [image, setImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [detected, setDetected] = useState<DetectedIngredient[] | null>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
 
-  // Handle file upload
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImage(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
+  const exhausted = useUsageStore((state) => state.exhausted);
+  const refreshUsage = useUsageStore((state) => state.refresh);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Release the camera if the user navigates away mid-capture; otherwise the
+  // recording indicator stays on and the device stays held.
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const reset = () => {
+    setImage(null);
+    setDetected(null);
+    setError(null);
   };
 
-  // Handle camera capture
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('That file is not an image. Choose a photo instead.');
+      return;
+    }
+
+    // The API caps the payload at 8MB of base64, which is roughly 6MB of file.
+    if (file.size > 6 * 1024 * 1024) {
+      setError('That image is larger than 6MB. Try a smaller photo.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      reset();
+      setImage(reader.result as string);
+    };
+    reader.onerror = () => setError('Could not read that file. Try another photo.');
+    reader.readAsDataURL(file);
+
+    // Clear the input so picking the same file twice still fires onChange.
+    event.target.value = '';
+  };
+
   const startCamera = async () => {
+    setError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        // Prefer the rear camera on phones, where the ingredients actually are.
+        video: { facingMode: 'environment' },
+      });
+      streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setIsCameraActive(true);
       }
-    } catch (error) {
-      console.error('Error accessing camera:', error);
+    } catch {
+      setError('Could not access the camera. Check permissions, or upload a photo instead.');
     }
   };
 
   const stopCamera = () => {
-    if (videoRef.current?.srcObject) {
-      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-      tracks.forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-      setIsCameraActive(false);
-    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setIsCameraActive(false);
   };
 
   const captureImage = () => {
-    if (videoRef.current) {
-      const canvas = document.createElement('canvas');
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      canvas.getContext('2d')?.drawImage(videoRef.current, 0, 0);
-      const imageDataUrl = canvas.toDataURL('image/jpeg');
-      setImage(imageDataUrl);
-      stopCamera();
-    }
+    const video = videoRef.current;
+    if (!video) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d')?.drawImage(video, 0, 0);
+
+    reset();
+    // 0.85 keeps the photo well under the size cap without visible artifacts.
+    setImage(canvas.toDataURL('image/jpeg', 0.85));
+    stopCamera();
   };
 
-  // Process the image
   const processImage = async () => {
     if (!image) return;
 
     setIsProcessing(true);
+    setError(null);
     try {
-      // TODO: Implement image processing logic with OpenAI Vision API
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Simulated delay
-      navigate('/recipes', { state: { ingredients: ['tomato', 'onion', 'garlic'] } }); // Example result
-    } catch (error) {
-      console.error('Error processing image:', error);
+      const { data } = await api.post<{ ingredients: DetectedIngredient[] }>(
+        '/api/images/analyze',
+        { image }
+      );
+
+      if (data.ingredients.length === 0) {
+        setError('No ingredients were recognized in that photo. Try a clearer, closer shot.');
+        setDetected([]);
+        return;
+      }
+
+      setDetected(data.ingredients);
+      refreshUsage();
+    } catch (err) {
+      // Quota exhaustion renders its own explanation instead of an error.
+      if (!handleQuotaError(err)) setError(errorMessage(err));
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const findRecipes = () => {
+    if (!detected?.length) return;
+    navigate('/leftover-magic', {
+      state: { ingredients: detected.map((item) => item.name) },
+    });
   };
 
   return (
@@ -81,24 +152,27 @@ const ImageRecognition: React.FC = () => {
         animate={{ opacity: 1, y: 0 }}
         className="max-w-2xl mx-auto"
       >
-        <h1 className="text-3xl font-bold mb-8">Snap & Cook</h1>
+        <PageHeader
+          title="Snap &amp; Cook"
+          description="Photograph what is in your fridge and we will identify the ingredients."
+        />
 
-        <div className="bg-white rounded-lg shadow-md p-6">
+        <Card className="p-6">
           {!image && !isCameraActive && (
-            <div className="grid grid-cols-2 gap-4 mb-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors"
+                className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-neutral-300 rounded-lg hover:border-primary-500 transition-colors"
               >
-                <Upload className="w-8 h-8 mb-2 text-gray-500" />
-                <span className="text-sm text-gray-600">Upload Image</span>
+                <Upload className="w-8 h-8 mb-2 text-neutral-500" />
+                <span className="text-sm text-neutral-600">Upload Image</span>
               </button>
               <button
                 onClick={startCamera}
-                className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors"
+                className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-neutral-300 rounded-lg hover:border-primary-500 transition-colors"
               >
-                <Camera className="w-8 h-8 mb-2 text-gray-500" />
-                <span className="text-sm text-gray-600">Take Photo</span>
+                <Camera className="w-8 h-8 mb-2 text-neutral-500" />
+                <span className="text-sm text-neutral-600">Take Photo</span>
               </button>
             </div>
           )}
@@ -113,57 +187,79 @@ const ImageRecognition: React.FC = () => {
 
           {isCameraActive && (
             <div className="relative">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                className="w-full rounded-lg"
-              />
-              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-4">
-                <button
-                  onClick={captureImage}
-                  className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark"
-                >
-                  Capture
-                </button>
-                <button
-                  onClick={stopCamera}
-                  className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600"
-                >
+              <video ref={videoRef} autoPlay playsInline className="w-full rounded-lg" />
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3">
+                <Button onClick={captureImage}>Capture</Button>
+                <Button variant="outline" onClick={stopCamera}>
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
           )}
 
           {image && (
             <div className="relative">
-              <img src={image} alt="Selected" className="w-full rounded-lg" />
+              <img src={image} alt="Selected ingredients" className="w-full rounded-lg" />
               <button
-                onClick={() => setImage(null)}
-                className="absolute top-2 right-2 p-1 bg-gray-800/50 text-white rounded-full hover:bg-gray-800"
+                onClick={reset}
+                aria-label="Remove image"
+                className="absolute top-2 right-2 p-1 bg-neutral-900/60 text-white rounded-full hover:bg-neutral-900"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
           )}
 
-          {image && !isProcessing && (
-            <button
-              onClick={processImage}
-              className="w-full mt-4 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark"
-            >
-              Process Image
-            </button>
+          {error && (
+            <div className="mt-4">
+              <ErrorBanner message={error} onDismiss={() => setError(null)} />
+            </div>
+          )}
+
+          {detected && detected.length > 0 && (
+            <div className="mt-6">
+              <h2 className="font-display font-semibold mb-3">Ingredients found</h2>
+              <ul className="flex flex-wrap gap-2 mb-4">
+                {detected.map((item) => (
+                  <li key={item.name}>
+                    <Badge tone="primary">
+                      {item.name}
+                      {item.quantity && (
+                        <span className="text-primary-600 ml-1">({item.quantity})</span>
+                      )}
+                      {/* The model is told to mark uncertainty rather than
+                          guess; surface that so the user can drop a wrong
+                          item before it reaches a shopping list. */}
+                      {item.confidence !== 'high' && (
+                        <span className="text-neutral-500 ml-1">· unsure</span>
+                      )}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+              <Button onClick={findRecipes} fullWidth>
+                Find recipes with these
+              </Button>
+            </div>
+          )}
+
+          {image && !isProcessing && !detected && (
+            <div className="mt-4 space-y-3">
+              {exhausted && <QuotaExhausted />}
+              <Button onClick={processImage} fullWidth disabled={exhausted}>
+                Identify ingredients
+              </Button>
+              <UsageMeter />
+            </div>
           )}
 
           {isProcessing && (
-            <div className="flex items-center justify-center mt-4">
-              <Loader2 className="w-6 h-6 animate-spin text-primary" />
-              <span className="ml-2">Processing image...</span>
+            <div className="flex items-center justify-center mt-4 text-neutral-600 gap-2">
+              <Spinner />
+              <span>Analyzing photo…</span>
             </div>
           )}
-        </div>
+        </Card>
       </motion.div>
     </div>
   );

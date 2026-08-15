@@ -1,16 +1,21 @@
-import React from 'react';
 import { Utensils } from 'lucide-react';
 
-const Loading: React.FC = () => {
+/** Full-page loading state, used while the session is being resolved. */
+const Loading = () => {
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-neutral-50">
-      <div className="animate-pulse">
-        <Utensils className="h-16 w-16 text-primary-500 mb-4" />
+    <div
+      className="min-h-screen flex flex-col items-center justify-center bg-neutral-50"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center justify-center w-14 h-14 rounded-xl bg-primary-600 mb-5 animate-shimmer">
+        <Utensils className="h-7 w-7 text-white" aria-hidden />
       </div>
-      <h2 className="text-2xl font-semibold text-gray-800 mb-2">Loading...</h2>
-      <div className="w-48 h-1 bg-gray-200 rounded-full overflow-hidden">
-        <div className="h-full bg-primary-500 rounded-full animate-loading"></div>
+      <p className="font-display text-lg font-semibold text-neutral-800 mb-4">Pantry Chef</p>
+      <div className="w-48 h-1 bg-neutral-200 rounded-full overflow-hidden">
+        <div className="h-full w-1/2 bg-primary-500 rounded-full animate-loading" />
       </div>
+      <span className="sr-only">Loading…</span>
     </div>
   );
 };

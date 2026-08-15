@@ -1,305 +1,305 @@
-import React, { useEffect, useState } from 'react';
-import { Calendar, ArrowRight, ArrowLeft, Plus, X, ShoppingCart } from 'lucide-react';
-import { useMealPlanStore } from '../store/mealPlanStore';
-import { useRecipeStore } from '../store/recipeStore';
-import { useGroceryListStore } from '../store/groceryListStore';
-import { Recipe } from '../types';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Calendar, Plus, Sparkles, ShoppingCart, Trash2, X } from 'lucide-react';
+import { useMealPlanStore, mealAt, currentWeekStart } from '@/store/mealPlanStore';
+import { useGroceryListStore } from '@/store/groceryListStore';
+import { useRecipeStore } from '@/store/recipeStore';
+import api, { errorMessage } from '@/lib/api';
+import type { DayOfWeek, MealPlan, MealType, Recipe } from '@/types';
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  ErrorState,
+  PageHeader,
+  Spinner,
+} from '@/components/ui';
+import { QuotaExhausted, UsageMeter } from '@/components/ai/UsageMeter';
+import { handleQuotaError, useUsageStore } from '@/store/usageStore';
 
-const MealPlanner: React.FC = () => {
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<Recipe[]>([]);
-  const [addingMealType, setAddingMealType] = useState<string | null>(null);
-  
-  const { 
-    currentMealPlan, 
-    getCurrentMealPlan, 
-    addRecipeToMealPlan, 
-    removeRecipeFromMealPlan 
+const DAYS: Array<{ index: DayOfWeek; label: string; short: string }> = [
+  { index: 0, label: 'Sunday', short: 'Sun' },
+  { index: 1, label: 'Monday', short: 'Mon' },
+  { index: 2, label: 'Tuesday', short: 'Tue' },
+  { index: 3, label: 'Wednesday', short: 'Wed' },
+  { index: 4, label: 'Thursday', short: 'Thu' },
+  { index: 5, label: 'Friday', short: 'Fri' },
+  { index: 6, label: 'Saturday', short: 'Sat' },
+];
+
+const MEALS: MealType[] = ['breakfast', 'lunch', 'dinner'];
+
+const MealPlanner = () => {
+  const navigate = useNavigate();
+
+  const {
+    currentMealPlan,
+    loading,
+    saving,
+    error,
+    isEmpty,
+    fetchCurrentMealPlan,
+    removeMeal,
+    setMeal,
+    deleteMealPlan,
+    clearError,
   } = useMealPlanStore();
-  
-  const { recipes, fetchRecipes, loading } = useRecipeStore();
-  const { generateFromRecipes } = useGroceryListStore();
+
+  const { generateFromMealPlan, saving: listSaving } = useGroceryListStore();
+  const { recipes, fetchRecipes } = useRecipeStore();
+
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [picking, setPicking] = useState<{ day: DayOfWeek; meal: MealType } | null>(null);
+  const exhausted = useUsageStore((state) => state.exhausted);
+  const refreshUsage = useUsageStore((state) => state.refresh);
 
   useEffect(() => {
-    fetchRecipes();
-    getCurrentMealPlan();
-  }, [fetchRecipes, getCurrentMealPlan]);
+    fetchCurrentMealPlan();
+  }, [fetchCurrentMealPlan]);
 
-  useEffect(() => {
-    if (currentMealPlan) {
-      const today = new Date().toISOString().split('T')[0];
-      setSelectedDate(today);
-    }
-  }, [currentMealPlan]);
-
-  const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const query = e.target.value.toLowerCase();
-    setSearchQuery(query);
-    
-    if (query.trim()) {
-      const filtered = recipes.filter(recipe => 
-        recipe.title.toLowerCase().includes(query) ||
-        recipe.tags.some(tag => tag.toLowerCase().includes(query))
-      );
-      setSearchResults(filtered);
-    } else {
-      setSearchResults([]);
+  /** Generates a full week with AI. The heaviest call in the app. */
+  const handleGenerate = async () => {
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      await api.post<MealPlan>('/api/ai/meal-plan/generate', {
+        week_start_date: currentWeekStart(),
+      });
+      await fetchCurrentMealPlan();
+      refreshUsage();
+    } catch (err) {
+      // Quota exhaustion has its own UI; do not also show a red error.
+      if (!handleQuotaError(err)) setGenerateError(errorMessage(err));
+    } finally {
+      setGenerating(false);
     }
   };
 
-  const handleAddRecipe = (recipe: Recipe) => {
-    if (selectedDate && addingMealType) {
-      addRecipeToMealPlan(recipe, selectedDate, addingMealType);
-      setAddingMealType(null);
-      setSearchQuery('');
-      setSearchResults([]);
-    }
-  };
-
-  const handleRemoveRecipe = (date: string, mealType: string) => {
-    removeRecipeFromMealPlan(date, mealType);
-  };
-
-  const formatDateDisplay = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-  };
-
-  const navigateDate = (direction: 'prev' | 'next') => {
-    if (!selectedDate) return;
-    
-    const date = new Date(selectedDate);
-    date.setDate(date.getDate() + (direction === 'next' ? 1 : -1));
-    setSelectedDate(date.toISOString().split('T')[0]);
-  };
-
-  const getPlannedMeals = () => {
-    if (!currentMealPlan || !selectedDate) return null;
-    
-    const day = currentMealPlan.days.find(d => d.date === selectedDate);
-    if (!day) return null;
-    
-    return day.meals;
-  };
-
-  const generateGroceryList = () => {
+  const handleBuildList = async () => {
     if (!currentMealPlan) return;
-    
-    // Collect all recipes in the meal plan
-    const allPlannedRecipes: Recipe[] = [];
-    
-    currentMealPlan.days.forEach(day => {
-      if (day.meals.breakfast) allPlannedRecipes.push(day.meals.breakfast);
-      if (day.meals.lunch) allPlannedRecipes.push(day.meals.lunch);
-      if (day.meals.dinner) allPlannedRecipes.push(day.meals.dinner);
-      if (day.meals.snacks) allPlannedRecipes.push(...day.meals.snacks);
-    });
-    
-    generateFromRecipes(allPlannedRecipes);
+    const list = await generateFromMealPlan(currentMealPlan.id);
+    if (list) navigate('/grocery-list');
   };
 
-  const meals = getPlannedMeals();
+  const openPicker = async (day: DayOfWeek, meal: MealType) => {
+    setPicking({ day, meal });
+    if (recipes.length === 0) await fetchRecipes();
+  };
+
+  const choose = async (recipe: Recipe) => {
+    if (!picking) return;
+    await setMeal(recipe, picking.day, picking.meal);
+    setPicking(null);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-3">
+        <Spinner className="w-8 h-8" />
+        <p className="text-neutral-600">Loading your meal plan…</p>
+      </div>
+    );
+  }
+
+  if (error && !currentMealPlan) {
+    return (
+      <ErrorState
+        message={error}
+        onRetry={() => {
+          clearError();
+          fetchCurrentMealPlan();
+        }}
+      />
+    );
+  }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-800">Meal Planner</h1>
-        <p className="text-gray-600 mt-2">Plan your meals for the week and generate shopping lists</p>
-      </div>
-      
-      {/* Calendar Navigation */}
-      {currentMealPlan && (
-        <div className="bg-white rounded-lg shadow-card p-6">
-          <div className="flex justify-between items-center mb-6">
-            <button 
-              className="btn-outline p-2"
-              onClick={() => navigateDate('prev')}
-            >
-              <ArrowLeft size={18} />
-            </button>
-            
-            <div className="flex items-center">
-              <Calendar size={20} className="text-gray-600 mr-2" />
-              <span className="text-lg font-medium">
-                {selectedDate ? formatDateDisplay(selectedDate) : 'Select a date'}
-              </span>
+    <div className="space-y-6">
+      <PageHeader
+        title="Meal Planner"
+        description={
+          currentMealPlan
+            ? `Week of ${new Date(currentMealPlan.week_start_date).toLocaleDateString()}`
+            : 'Plan a week of meals around your dietary needs.'
+        }
+        action={
+          currentMealPlan && (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={handleBuildList} loading={listSaving}>
+                {!listSaving && <ShoppingCart size={16} aria-hidden />}
+                Build grocery list
+              </Button>
+              <Button variant="ghost" onClick={deleteMealPlan} disabled={saving}>
+                <Trash2 size={16} aria-hidden />
+                Clear
+              </Button>
             </div>
-            
-            <button 
-              className="btn-outline p-2"
-              onClick={() => navigateDate('next')}
-            >
-              <ArrowRight size={18} />
-            </button>
-          </div>
-          
-          <div className="grid gap-4">
-            {/* Breakfast */}
-            <div className="border rounded-lg p-4">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="font-medium">Breakfast</h3>
-                {meals?.breakfast ? (
-                  <button 
-                    className="text-gray-400 hover:text-red-500"
-                    onClick={() => selectedDate && handleRemoveRecipe(selectedDate, 'breakfast')}
-                  >
-                    <X size={16} />
-                  </button>
-                ) : (
-                  <button 
-                    className="text-primary-600 hover:text-primary-800 flex items-center text-sm"
-                    onClick={() => setAddingMealType('breakfast')}
-                  >
-                    <Plus size={16} className="mr-1" />
-                    Add
-                  </button>
-                )}
-              </div>
-              
-              {meals?.breakfast ? (
-                <div className="bg-gray-50 rounded p-2">
-                  <p className="font-medium">{meals.breakfast.title}</p>
-                  <p className="text-sm text-gray-500">{meals.breakfast.prep_time + meals.breakfast.cook_time} min • {meals.breakfast.serving_size} servings</p>
-                </div>
-              ) : (
-                <div className="text-gray-400 text-sm">No breakfast planned</div>
-              )}
-            </div>
-            
-            {/* Lunch */}
-            <div className="border rounded-lg p-4">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="font-medium">Lunch</h3>
-                {meals?.lunch ? (
-                  <button 
-                    className="text-gray-400 hover:text-red-500"
-                    onClick={() => selectedDate && handleRemoveRecipe(selectedDate, 'lunch')}
-                  >
-                    <X size={16} />
-                  </button>
-                ) : (
-                  <button 
-                    className="text-primary-600 hover:text-primary-800 flex items-center text-sm"
-                    onClick={() => setAddingMealType('lunch')}
-                  >
-                    <Plus size={16} className="mr-1" />
-                    Add
-                  </button>
-                )}
-              </div>
-              
-              {meals?.lunch ? (
-                <div className="bg-gray-50 rounded p-2">
-                  <p className="font-medium">{meals.lunch.title}</p>
-                  <p className="text-sm text-gray-500">{meals.lunch.prep_time + meals.lunch.cook_time} min • {meals.lunch.serving_size} servings</p>
-                </div>
-              ) : (
-                <div className="text-gray-400 text-sm">No lunch planned</div>
-              )}
-            </div>
-            
-            {/* Dinner */}
-            <div className="border rounded-lg p-4">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="font-medium">Dinner</h3>
-                {meals?.dinner ? (
-                  <button 
-                    className="text-gray-400 hover:text-red-500"
-                    onClick={() => selectedDate && handleRemoveRecipe(selectedDate, 'dinner')}
-                  >
-                    <X size={16} />
-                  </button>
-                ) : (
-                  <button 
-                    className="text-primary-600 hover:text-primary-800 flex items-center text-sm"
-                    onClick={() => setAddingMealType('dinner')}
-                  >
-                    <Plus size={16} className="mr-1" />
-                    Add
-                  </button>
-                )}
-              </div>
-              
-              {meals?.dinner ? (
-                <div className="bg-gray-50 rounded p-2">
-                  <p className="font-medium">{meals.dinner.title}</p>
-                  <p className="text-sm text-gray-500">{meals.dinner.prep_time + meals.dinner.cook_time} min • {meals.dinner.serving_size} servings</p>
-                </div>
-              ) : (
-                <div className="text-gray-400 text-sm">No dinner planned</div>
-              )}
-            </div>
-          </div>
-          
-          <div className="mt-6">
-            <button 
-              className="btn-secondary w-full flex items-center justify-center"
-              onClick={generateGroceryList}
-            >
-              <ShoppingCart size={18} className="mr-2" />
-              Generate Grocery List
-            </button>
-          </div>
-        </div>
+          )
+        }
+      />
+
+      {(error || generateError) && (
+        <ErrorBanner
+          message={error ?? generateError ?? ''}
+          onDismiss={() => {
+            clearError();
+            setGenerateError(null);
+          }}
+        />
       )}
-      
-      {/* Add Recipe Modal */}
-      {addingMealType && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-lg w-full max-w-lg max-h-[80vh] flex flex-col">
-            <div className="p-4 border-b">
-              <div className="flex justify-between items-center">
-                <h3 className="text-lg font-medium">
-                  Add Recipe to {addingMealType.charAt(0).toUpperCase() + addingMealType.slice(1)}
-                </h3>
-                <button 
-                  className="text-gray-400 hover:text-gray-600"
-                  onClick={() => {
-                    setAddingMealType(null);
-                    setSearchQuery('');
-                    setSearchResults([]);
-                  }}
-                >
-                  <X size={20} />
-                </button>
+
+      {isEmpty && !currentMealPlan ? (
+        <Card>
+          <EmptyState
+            icon={<Calendar className="w-7 h-7" />}
+            title="No meal plan for this week"
+            description="Generate a full week of meals with AI, honoring your allergies and dietary restrictions, or build one meal at a time."
+            action={
+              <div className="flex flex-col items-center gap-3">
+                {exhausted ? (
+                  <QuotaExhausted />
+                ) : (
+                  <Button onClick={handleGenerate} loading={generating} size="lg">
+                    {!generating && <Sparkles size={16} aria-hidden />}
+                    Generate my week
+                  </Button>
+                )}
+                <UsageMeter />
               </div>
-            </div>
-            
-            <div className="p-4 border-b">
-              <input
-                type="text"
-                className="input"
-                placeholder="Search for recipes..."
-                value={searchQuery}
-                onChange={handleSearch}
-              />
-            </div>
-            
-            <div className="flex-grow overflow-y-auto p-4">
-              {loading ? (
-                <div className="py-4 text-center text-gray-500">Loading recipes...</div>
-              ) : searchResults.length > 0 ? (
-                <div className="space-y-3">
-                  {searchResults.map(recipe => (
-                    <div 
-                      key={recipe.id}
-                      className="border rounded-lg p-3 hover:bg-gray-50 cursor-pointer"
-                      onClick={() => handleAddRecipe(recipe)}
-                    >
-                      <p className="font-medium">{recipe.title}</p>
-                      <p className="text-sm text-gray-500 line-clamp-1">{recipe.description}</p>
-                      <div className="flex text-xs text-gray-400 mt-1">
-                        <span className="mr-2">{recipe.prep_time + recipe.cook_time} min</span>
-                        <span>{recipe.serving_size} servings</span>
+            }
+          />
+        </Card>
+      ) : (
+        <>
+          {/* Horizontal scroll rather than reflow: a week grid compressed into
+              a phone width becomes unreadable, and the day columns need to
+              stay aligned to be scannable. */}
+          <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+            <div className="min-w-[820px] grid grid-cols-8 gap-3">
+              <div aria-hidden />
+              {DAYS.map((day) => (
+                <div key={day.index} className="text-center pb-2">
+                  <p className="font-display font-semibold text-neutral-900">{day.short}</p>
+                </div>
+              ))}
+
+              {MEALS.map((mealType) => (
+                <div key={mealType} className="contents">
+                  <div className="flex items-center">
+                    <span className="text-sm font-medium text-neutral-600 capitalize">
+                      {mealType}
+                    </span>
+                  </div>
+
+                  {DAYS.map((day) => {
+                    const item = mealAt(currentMealPlan, day.index, mealType);
+                    const recipe = item?.recipe;
+
+                    return (
+                      <div key={`${mealType}-${day.index}`} className="min-h-[104px]">
+                        {recipe ? (
+                          <div className="group relative h-full p-2.5 rounded-lg border border-neutral-200 bg-white hover:border-primary-300 transition-colors">
+                            <button
+                              onClick={() => navigate(`/recipe/${recipe.id}`)}
+                              className="text-left w-full"
+                            >
+                              <p className="text-xs font-medium text-neutral-900 line-clamp-3 mb-1">
+                                {recipe.title}
+                              </p>
+                              <p className="text-[11px] text-neutral-500">
+                                {(recipe.prep_time ?? 0) + (recipe.cook_time ?? 0)} min
+                              </p>
+                            </button>
+                            <button
+                              onClick={() => removeMeal(day.index, mealType)}
+                              aria-label={`Remove ${recipe.title} from ${day.label} ${mealType}`}
+                              className="absolute top-1 right-1 p-1 rounded-full bg-white/90 text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-red-600 transition-opacity"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => openPicker(day.index, mealType)}
+                            aria-label={`Add a ${mealType} for ${day.label}`}
+                            className="h-full w-full flex items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-400 hover:border-primary-400 hover:text-primary-600 transition-colors"
+                          >
+                            <Plus size={16} aria-hidden />
+                          </button>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Card className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <p className="font-medium text-neutral-900">Start over with AI</p>
+              <p className="text-sm text-neutral-600">
+                Replaces this week with a freshly generated plan.
+              </p>
+              <UsageMeter className="mt-2" />
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleGenerate}
+              loading={generating}
+              disabled={exhausted}
+            >
+              {!generating && <Sparkles size={16} aria-hidden />}
+              Regenerate week
+            </Button>
+          </Card>
+        </>
+      )}
+
+      {/* Recipe picker */}
+      {picking && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choose a recipe"
+          onClick={() => setPicking(null)}
+        >
+          <div
+            className="bg-white w-full sm:max-w-lg rounded-t-xl sm:rounded-xl max-h-[80vh] flex flex-col"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-neutral-200">
+              <h2 className="font-display font-semibold">
+                Choose a {picking.meal} for {DAYS[picking.day].label}
+              </h2>
+              <button onClick={() => setPicking(null)} aria-label="Close" className="p-1 text-neutral-400 hover:text-neutral-700">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-2">
+              {recipes.length === 0 ? (
+                <div className="p-6 text-center text-sm text-neutral-500">
+                  <Spinner className="mx-auto mb-2" />
+                  Loading recipes…
                 </div>
               ) : (
-                <div className="py-4 text-center text-gray-500">
-                  {searchQuery ? 'No recipes found' : 'Type to search for recipes'}
-                </div>
+                recipes.map((recipe) => (
+                  <button
+                    key={recipe.id}
+                    onClick={() => choose(recipe)}
+                    disabled={saving}
+                    className="w-full text-left p-3 rounded-lg hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+                  >
+                    <p className="font-medium text-neutral-900">{recipe.title}</p>
+                    <p className="text-sm text-neutral-500">
+                      {(recipe.prep_time ?? 0) + (recipe.cook_time ?? 0)} min · {recipe.difficulty}
+                    </p>
+                  </button>
+                ))
               )}
             </div>
           </div>

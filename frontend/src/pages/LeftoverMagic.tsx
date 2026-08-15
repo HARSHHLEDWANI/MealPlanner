@@ -1,148 +1,156 @@
-import React, { useState } from 'react';
-import { Plus, X, Sparkles, Loader } from 'lucide-react';
-import { useRecipeStore } from '../store/recipeStore';
-import RecipeGrid from '../components/recipes/RecipeGrid';
+import { useEffect, useState } from 'react';
+import { Plus, X, Sparkles } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
+import { useRecipeStore } from '@/store/recipeStore';
+import RecipeGrid from '@/components/recipes/RecipeGrid';
+import { Badge, Button, Card, ErrorBanner, Input, PageHeader } from '@/components/ui';
+import { QuotaExhausted, UsageMeter } from '@/components/ai/UsageMeter';
+import { useUsageStore } from '@/store/usageStore';
 
-const LeftoverMagic: React.FC = () => {
-  const [ingredients, setIngredients] = useState<string[]>([]);
+/**
+ * Find recipes from ingredients on hand.
+ *
+ * Accepts ingredients via router state, which is how Snap & Cook hands off
+ * what it recognized in a photo.
+ */
+const LeftoverMagic = () => {
+  const location = useLocation();
+  const incoming = (location.state as { ingredients?: string[] } | null)?.ingredients;
+
+  const [ingredients, setIngredients] = useState<string[]>(incoming ?? []);
   const [inputValue, setInputValue] = useState('');
-  const [generating, setGenerating] = useState(false);
-  const { searchByIngredients, searchResults, loading } = useRecipeStore();
 
-  const handleAddIngredient = () => {
-    if (inputValue.trim() && !ingredients.includes(inputValue.trim())) {
-      setIngredients([...ingredients, inputValue.trim()]);
+  const {
+    searchByIngredients,
+    generateRecipe,
+    searchResults,
+    loading,
+    generating,
+    error,
+    hasSearched,
+    clearError,
+  } = useRecipeStore();
+
+  const exhausted = useUsageStore((state) => state.exhausted);
+
+  // Search straight away when arriving from the photo flow — the user already
+  // expressed intent by taking the picture.
+  useEffect(() => {
+    if (incoming?.length) searchByIngredients(incoming);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addIngredient = () => {
+    const value = inputValue.trim().toLowerCase();
+    if (!value || ingredients.includes(value)) {
       setInputValue('');
+      return;
     }
+    setIngredients([...ingredients, value]);
+    setInputValue('');
   };
 
-  const handleRemoveIngredient = (ingredient: string) => {
-    setIngredients(ingredients.filter(ing => ing !== ingredient));
+  const removeIngredient = (target: string) => {
+    setIngredients(ingredients.filter((item) => item !== target));
   };
 
-  const handleGenerateRecipes = async () => {
-    if (ingredients.length === 0) return;
-    
-    setGenerating(true);
-    try {
-      // In a real application, you would use an AI service
-      // to generate creative recipes based on leftovers
-      await searchByIngredients(ingredients);
-    } finally {
-      setGenerating(false);
-    }
-  };
+  const busy = loading || generating;
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-800">Leftover Magic</h1>
-        <p className="text-gray-600 mt-2">Turn random ingredients into delicious meals</p>
-      </div>
-      
-      <div className="bg-white rounded-lg shadow-card p-6">
-        <div className="flex items-center mb-4">
-          <Sparkles size={24} className="text-primary-500 mr-2" />
-          <h2 className="text-xl font-semibold">Enter Your Leftovers</h2>
+      <PageHeader
+        title="Leftover Magic"
+        description="Tell us what is in the fridge and we will find something to make."
+      />
+
+      <Card className="p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Sparkles size={20} className="text-primary-500" aria-hidden />
+          <h2 className="font-display text-lg font-semibold">Your ingredients</h2>
         </div>
-        
-        <p className="text-gray-600 mb-6">
-          Add any random ingredients you have left in your fridge or pantry. Our AI will suggest creative ways to use them!
-        </p>
-        
-        <div className="mb-6">
-          <div className="flex gap-2 mb-2">
-            <input
-              type="text"
-              className="input flex-grow"
-              placeholder="Add any leftover ingredient..."
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleAddIngredient();
-                }
-              }}
-            />
-            <button 
-              className="btn-primary"
-              onClick={handleAddIngredient}
-            >
-              <Plus size={18} className="mr-2" />
-              Add
-            </button>
-          </div>
-          
-          <div className="text-sm text-gray-500 mt-1">
-            Press Enter to add each ingredient
-          </div>
-        </div>
-        
-        {ingredients.length > 0 && (
-          <div className="mb-6">
-            <h3 className="font-medium text-gray-700 mb-2">Your Leftovers:</h3>
-            <div className="flex flex-wrap gap-2">
-              {ingredients.map((ingredient, index) => (
-                <div 
-                  key={index}
-                  className="bg-primary-50 rounded-full px-3 py-1 flex items-center text-primary-800"
-                >
-                  <span>{ingredient}</span>
-                  <button 
-                    className="ml-2 text-primary-600 hover:text-primary-800"
-                    onClick={() => handleRemoveIngredient(ingredient)}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        
-        <button 
-          className="btn-primary w-full flex items-center justify-center"
-          onClick={handleGenerateRecipes}
-          disabled={ingredients.length === 0 || generating}
-        >
-          {generating ? (
-            <>
-              <Loader size={18} className="animate-spin mr-2" />
-              Working Magic...
-            </>
-          ) : (
-            <>
-              <Sparkles size={18} className="mr-2" />
-              Create Recipes from Leftovers
-            </>
-          )}
-        </button>
-      </div>
-      
-      {/* Creative Recipe Suggestions */}
-      <div>
-        <h2 className="text-2xl font-semibold mb-4">Creative Recipe Ideas</h2>
-        {loading || generating ? (
-          <div className="text-center py-8">
-            <div className="animate-pulse text-primary-500">
-              <div className="flex justify-center">
-                <div className="w-16 h-16 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            </div>
-            <p className="mt-4 text-gray-600">Crafting magical recipes from your leftovers...</p>
-          </div>
-        ) : (
-          <RecipeGrid 
-            recipes={searchResults} 
-            emptyMessage={
-              ingredients.length === 0 
-                ? "Add some leftovers to get creative recipe ideas!" 
-                : "No recipe ideas found. Try adding different ingredients!"
-            } 
+
+        <div className="flex flex-col sm:flex-row gap-2 mb-2">
+          <Input
+            value={inputValue}
+            onChange={(event) => setInputValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                addIngredient();
+              }
+            }}
+            placeholder="Add an ingredient…"
+            aria-label="Add an ingredient"
+            disabled={busy}
           />
+          <Button type="button" onClick={addIngredient} disabled={!inputValue.trim() || busy}>
+            <Plus size={16} aria-hidden />
+            Add
+          </Button>
+        </div>
+        <p className="text-xs text-neutral-500 mb-6">Press Enter to add each one.</p>
+
+        {ingredients.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-6">
+            {ingredients.map((ingredient) => (
+              <Badge key={ingredient} tone="primary" className="pr-1.5">
+                {ingredient}
+                <button
+                  onClick={() => removeIngredient(ingredient)}
+                  aria-label={`Remove ${ingredient}`}
+                  className="ml-1.5 text-primary-600 hover:text-primary-900 rounded-full"
+                >
+                  <X size={13} />
+                </button>
+              </Badge>
+            ))}
+          </div>
         )}
-      </div>
+
+        {exhausted && <QuotaExhausted className="mb-4" />}
+
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Button
+            onClick={() => searchByIngredients(ingredients)}
+            loading={loading}
+            disabled={ingredients.length === 0 || busy}
+            fullWidth
+          >
+            Find matching recipes
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => generateRecipe(`a dish using ${ingredients.join(', ')}`)}
+            loading={generating}
+            disabled={ingredients.length === 0 || busy || exhausted}
+            fullWidth
+          >
+            {!generating && <Sparkles size={16} aria-hidden />}
+            Invent something new
+          </Button>
+        </div>
+
+        <UsageMeter className="mt-4" />
+      </Card>
+
+      <section>
+        <h2 className="font-display text-xl font-semibold text-neutral-900 mb-5">Ideas</h2>
+
+        {error && <ErrorBanner message={error} onDismiss={clearError} />}
+
+        <RecipeGrid
+          recipes={searchResults}
+          loading={busy}
+          emptyTitle={
+            hasSearched ? 'Nothing in the library uses those' : 'Add what you have on hand'
+          }
+          emptyDescription={
+            hasSearched
+              ? 'Try different ingredients, or let AI invent a recipe around them.'
+              : 'Add a few ingredients above and we will find recipes that use them.'
+          }
+        />
+      </section>
     </div>
   );
 };
