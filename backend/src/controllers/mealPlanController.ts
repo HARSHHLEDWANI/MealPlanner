@@ -1,149 +1,153 @@
 import { Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
-import { MealPlan, MealPlanItem } from '../types';
+import { actingUserId } from '../middleware/auth';
+import { assertOwnsMealPlan } from '../lib/ownership';
+import { notFound } from '../lib/errors';
+import { MealPlanItem } from '../types';
+
+/** Selects a plan with its items and each item's full recipe. */
+const PLAN_WITH_MEALS = `
+  *,
+  meals:meal_plan_items(
+    *,
+    recipe:recipes(*)
+  )
+`;
 
 export class MealPlanController {
-  async getCurrentMealPlan(req: Request, res: Response) {
-    try {
-      const { user_id } = req.params;
-      const today = new Date();
-      
-      const { data, error } = await supabase
-        .from('meal_plans')
-        .select(`
-          *,
-          meals:meal_plan_items(*)
-        `)
-        .eq('user_id', user_id)
-        .gte('week_start_date', today.toISOString())
-        .order('week_start_date', { ascending: true })
-        .limit(1)
-        .single();
+  /**
+   * The caller's current or next upcoming plan.
+   *
+   * Compares against today's calendar date. The previous version compared a
+   * DATE column to a full ISO timestamp, so a plan starting today was excluded
+   * for most of the day.
+   */
+  getCurrentMealPlan = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const today = new Date().toISOString().slice(0, 10);
 
-      if (error) throw error;
-      if (!data) {
-        return res.status(404).json({ error: 'No current meal plan found' });
-      }
+    const { data, error } = await supabase
+      .from('meal_plans')
+      .select(PLAN_WITH_MEALS)
+      .eq('user_id', userId)
+      .gte('week_start_date', today)
+      .order('week_start_date', { ascending: true })
+      .limit(1)
+      .maybeSingle();
 
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch meal plan' });
-    }
-  }
+    if (error) throw error;
+    if (!data) throw notFound('Meal plan');
 
-  async createMealPlan(req: Request, res: Response) {
-    try {
-      const { user_id } = req.params;
-      const { week_start_date, meals }: MealPlan = req.body;
+    res.json(data);
+  };
 
-      // Start a transaction
-      const { data: mealPlan, error: mealPlanError } = await supabase
-        .from('meal_plans')
-        .insert({
-          user_id,
-          week_start_date,
+  createMealPlan = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { week_start_date, meals } = req.body as {
+      week_start_date: string;
+      meals: MealPlanItem[];
+    };
+
+    const { data: mealPlan, error: planError } = await supabase
+      .from('meal_plans')
+      .insert({
+        user_id: userId,
+        week_start_date,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (planError) throw planError;
+
+    if (meals.length > 0) {
+      const { error: itemsError } = await supabase.from('meal_plan_items').insert(
+        meals.map((meal) => ({
+          recipe_id: meal.recipe_id,
+          day_of_week: meal.day_of_week,
+          meal_type: meal.meal_type,
+          servings: meal.servings,
+          meal_plan_id: mealPlan.id,
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
+        }))
+      );
 
-      if (mealPlanError) throw mealPlanError;
-
-      // Insert meal plan items
-      const mealItems = meals.map(meal => ({
-        ...meal,
-        meal_plan_id: mealPlan.id,
-        created_at: new Date().toISOString()
-      }));
-
-      const { error: mealsError } = await supabase
-        .from('meal_plan_items')
-        .insert(mealItems);
-
-      if (mealsError) throw mealsError;
-
-      // Fetch the complete meal plan with items
-      const { data: completePlan, error: fetchError } = await supabase
-        .from('meal_plans')
-        .select(`
-          *,
-          meals:meal_plan_items(*)
-        `)
-        .eq('id', mealPlan.id)
-        .single();
-
-      if (fetchError) throw fetchError;
-      res.json(completePlan);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to create meal plan' });
+      if (itemsError) {
+        // Roll back by hand — Supabase's REST client has no transaction, and a
+        // plan with no items is worse than no plan at all.
+        await supabase.from('meal_plans').delete().eq('id', mealPlan.id);
+        throw itemsError;
+      }
     }
-  }
 
-  async updateMealPlan(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      const { meals }: { meals: MealPlanItem[] } = req.body;
+    const { data: completePlan, error: fetchError } = await supabase
+      .from('meal_plans')
+      .select(PLAN_WITH_MEALS)
+      .eq('id', mealPlan.id)
+      .single();
 
-      // Update meal plan timestamp
-      const { error: updateError } = await supabase
-        .from('meal_plans')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', id);
+    if (fetchError) throw fetchError;
 
-      if (updateError) throw updateError;
+    res.status(201).json(completePlan);
+  };
 
-      // Delete existing meal items
-      const { error: deleteError } = await supabase
-        .from('meal_plan_items')
-        .delete()
-        .eq('meal_plan_id', id);
+  updateMealPlan = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { id } = req.params;
+    const { meals } = req.body as { meals: MealPlanItem[] };
 
-      if (deleteError) throw deleteError;
+    await assertOwnsMealPlan(id, userId);
 
-      // Insert new meal items
-      const { error: insertError } = await supabase
-        .from('meal_plan_items')
-        .insert(
-          meals.map(meal => ({
-            ...meal,
-            meal_plan_id: id,
-            created_at: new Date().toISOString()
-          }))
-        );
+    const { error: updateError } = await supabase
+      .from('meal_plans')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    const { error: deleteError } = await supabase
+      .from('meal_plan_items')
+      .delete()
+      .eq('meal_plan_id', id);
+
+    if (deleteError) throw deleteError;
+
+    if (meals.length > 0) {
+      const { error: insertError } = await supabase.from('meal_plan_items').insert(
+        meals.map((meal) => ({
+          recipe_id: meal.recipe_id,
+          day_of_week: meal.day_of_week,
+          meal_type: meal.meal_type,
+          servings: meal.servings,
+          meal_plan_id: id,
+          created_at: new Date().toISOString(),
+        }))
+      );
 
       if (insertError) throw insertError;
-
-      // Fetch updated meal plan
-      const { data: updatedPlan, error: fetchError } = await supabase
-        .from('meal_plans')
-        .select(`
-          *,
-          meals:meal_plan_items(*)
-        `)
-        .eq('id', id)
-        .single();
-
-      if (fetchError) throw fetchError;
-      res.json(updatedPlan);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to update meal plan' });
     }
-  }
 
-  async deleteMealPlan(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
+    const { data: updatedPlan, error: fetchError } = await supabase
+      .from('meal_plans')
+      .select(PLAN_WITH_MEALS)
+      .eq('id', id)
+      .single();
 
-      const { error } = await supabase
-        .from('meal_plans')
-        .delete()
-        .eq('id', id);
+    if (fetchError) throw fetchError;
 
-      if (error) throw error;
-      res.json({ message: 'Meal plan deleted successfully' });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to delete meal plan' });
-    }
-  }
-} 
+    res.json(updatedPlan);
+  };
+
+  deleteMealPlan = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { id } = req.params;
+
+    await assertOwnsMealPlan(id, userId);
+
+    const { error } = await supabase.from('meal_plans').delete().eq('id', id);
+    if (error) throw error;
+
+    res.json({ message: 'Meal plan deleted successfully' });
+  };
+}

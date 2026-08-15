@@ -1,277 +1,301 @@
 import { Request, Response } from 'express';
 import { aiService } from '../services/aiService';
 import { supabase } from '../lib/supabase';
-import { UserPreferences } from '../types';
+import { actingUserId } from '../middleware/auth';
+import { refundQuota } from '../middleware/quota';
+import { usageService } from '../services/usageService';
+import { notFound, upstreamFailure } from '../lib/errors';
+import { Recipe, UserPreferences } from '../types';
 
-export class AIController {
-  /**
-   * Generates a new recipe based on user preferences and available ingredients
-   */
-  async generateRecipe(req: Request, res: Response): Promise<void> {
-    try {
-      const { user_id } = req.params;
-      const { query, cuisine } = req.body;
+/**
+ * Loads a user's preferences, or undefined if they have none.
+ *
+ * Absent preferences are normal, not an error — the AI prompts degrade to
+ * sensible defaults without them.
+ */
+async function loadPreferences(userId: string): Promise<UserPreferences | undefined> {
+  const { data, error } = await supabase
+    .from('user_preferences')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
 
-      // Fetch user preferences if available
-      let userPreferences: UserPreferences | undefined;
-      try {
-        const { data } = await supabase
-          .from('user_preferences')
-          .select('*')
-          .eq('user_id', user_id)
-          .single();
-        userPreferences = data || undefined;
-      } catch (error) {
-        // User preferences not found, continue without them
-        console.log('No user preferences found, generating recipe without preferences');
-      }
-
-      const generatedRecipe = await aiService.generateRecipe(query, cuisine, userPreferences);
-      
-      // Save recipe to database
-      const { data: savedRecipe, error: saveError } = await supabase
-        .from('recipes')
-        .insert({
-          title: generatedRecipe.title,
-          description: generatedRecipe.description,
-          ingredients: generatedRecipe.ingredients,
-          instructions: generatedRecipe.instructions,
-          prep_time: generatedRecipe.prep_time,
-          cook_time: generatedRecipe.cook_time,
-          servings: generatedRecipe.servings,
-          difficulty: generatedRecipe.difficulty,
-          cuisine_type: generatedRecipe.cuisine_type,
-          dietary_tags: generatedRecipe.dietary_tags,
-          calories_per_serving: generatedRecipe.calories_per_serving,
-          user_generated: true,
-          created_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-
-      if (saveError) {
-        console.error('Error saving recipe:', saveError);
-        // Still return the generated recipe even if save fails
-        return res.status(200).json(generatedRecipe);
-      }
-
-      res.status(200).json(savedRecipe);
-    } catch (error) {
-      console.error('Error generating recipe:', error);
-      res.status(500).json({ error: 'Failed to generate recipe' });
-    }
+  if (error) {
+    console.warn('Could not load user preferences; continuing without them', error);
+    return undefined;
   }
 
-  /**
-   * Generates a meal plan for a user based on their preferences and constraints
-   */
-  async generateMealPlan(req: Request, res: Response): Promise<void> {
+  return data ?? undefined;
+}
+
+/** Maps a generated recipe onto the recipes table's columns. */
+function toRecipeRow(recipe: Recipe, userId: string) {
+  return {
+    title: recipe.title,
+    description: recipe.description,
+    ingredients: recipe.ingredients,
+    instructions: recipe.instructions,
+    prep_time: recipe.prep_time,
+    cook_time: recipe.cook_time,
+    servings: recipe.servings,
+    difficulty: recipe.difficulty,
+    cuisine_type: recipe.cuisine_type,
+    dietary_tags: recipe.dietary_tags,
+    calories_per_serving: recipe.calories_per_serving,
+    user_generated: true,
+    created_by: userId,
+    created_at: new Date().toISOString(),
+  };
+}
+
+export class AIController {
+  /** Reports today's AI usage so the UI can show what is left. */
+  getUsage = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    res.json(await usageService.current(userId));
+  };
+
+  /** Generates a recipe from a free-text query and saves it. */
+  generateRecipe = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { query, cuisine } = req.body as { query: string; cuisine?: string };
+
+    const preferences = await loadPreferences(userId);
+
+    // Asking the same thing twice in quick succession — a double-clicked
+    // button, a retried request — should not be billed twice.
+    const cacheKey = usageService.cacheKey('recipe_generate', userId, { query, cuisine }, preferences);
+    const cached = await usageService.readCache<Recipe>(cacheKey);
+    if (cached) {
+      // No model call happened, so the reservation is given back.
+      await refundQuota(req);
+      return res.status(200).json(cached);
+    }
+
+    let generated: Recipe;
     try {
-      const { user_id } = req.params;
-      const { week_start_date } = req.body;
+      generated = await aiService.generateRecipe(query, cuisine, preferences);
+    } catch (error) {
+      await refundQuota(req);
+      throw error;
+    }
 
-      if (!week_start_date) {
-        return res.status(400).json({ error: 'week_start_date is required' });
-      }
+    const { data: saved, error } = await supabase
+      .from('recipes')
+      .insert(toRecipeRow(generated, userId))
+      .select()
+      .single();
 
-      // Fetch user preferences
-      let userPreferences: UserPreferences | undefined;
-      try {
-        const { data } = await supabase
-          .from('user_preferences')
-          .select('*')
-          .eq('user_id', user_id)
-          .single();
-        userPreferences = data || undefined;
-      } catch (error) {
-        console.log('No user preferences found, generating meal plan without preferences');
-      }
+    if (error) {
+      // The generation itself succeeded and already cost a model call, so
+      // return it rather than making the user pay to retry.
+      console.error('Generated recipe could not be saved', error);
+      return res.status(200).json({ ...generated, persisted: false });
+    }
 
-      // Generate meal plan with recipes
-      const { mealPlan, recipes } = await aiService.generateMealPlan(
-        user_id,
+    await usageService.writeCache(cacheKey, userId, 'recipe_generate', saved);
+
+    res.status(201).json(saved);
+  };
+
+  /**
+   * Generates a full week of meals, persists the recipes, the plan, and the
+   * plan items, then returns the assembled plan.
+   */
+  generateMealPlan = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { week_start_date } = req.body as { week_start_date: string };
+
+    const preferences = await loadPreferences(userId);
+
+    let mealPlan: { user_id: string; week_start_date: string; meals: any[] };
+    let recipes: Recipe[];
+    try {
+      // Not cached: a meal plan is expected to differ each time it is asked
+      // for, and serving a stale one would defeat the point of regenerating.
+      ({ mealPlan, recipes } = await aiService.generateMealPlan(
+        userId,
         week_start_date,
-        userPreferences
-      );
+        preferences
+      ));
+    } catch (error) {
+      await refundQuota(req);
+      throw error;
+    }
 
-      // Save all recipes to database first
-      const recipeIdMap = new Map<string, string>(); // temp_id -> real_id
-      
-      for (const recipe of recipes) {
-        const { data: savedRecipe, error: saveError } = await supabase
-          .from('recipes')
-          .insert({
-            title: recipe.title,
-            description: recipe.description,
-            ingredients: recipe.ingredients,
-            instructions: recipe.instructions,
-            prep_time: recipe.prep_time,
-            cook_time: recipe.cook_time,
-            servings: recipe.servings,
-            difficulty: recipe.difficulty,
-            cuisine_type: recipe.cuisine_type,
-            dietary_tags: recipe.dietary_tags,
-            calories_per_serving: recipe.calories_per_serving,
-            user_generated: true,
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
+    // Insert every generated recipe in one round trip. This was a sequential
+    // await inside a loop — up to 21 round trips per request.
+    const { data: savedRecipes, error: recipesError } = await supabase
+      .from('recipes')
+      .insert(recipes.map((recipe) => toRecipeRow(recipe, userId)))
+      .select();
 
-        if (saveError) {
-          console.error('Error saving recipe:', saveError);
-          throw new Error(`Failed to save recipe: ${recipe.title}`);
-        }
+    if (recipesError) throw recipesError;
 
-        if (savedRecipe) {
-          recipeIdMap.set(recipe.id, savedRecipe.id);
-        }
+    // insert() returns rows in input order, so zip them back to their
+    // temporary IDs to resolve the plan items' references.
+    const recipeIdMap = new Map<string, string>();
+    recipes.forEach((recipe, index) => {
+      const saved = savedRecipes?.[index];
+      if (saved) recipeIdMap.set(recipe.id, saved.id);
+    });
+
+    const savedRecipeIds = (savedRecipes ?? []).map((r) => r.id);
+
+    /** Removes everything written so far. Supabase's REST client has no transactions. */
+    const rollback = async (planId?: string) => {
+      if (planId) await supabase.from('meal_plans').delete().eq('id', planId);
+      if (savedRecipeIds.length > 0) {
+        await supabase.from('recipes').delete().in('id', savedRecipeIds);
       }
+    };
 
-      // Create meal plan
-      const { data: savedMealPlan, error: mealPlanError } = await supabase
-        .from('meal_plans')
-        .insert({
-          user_id: mealPlan.user_id,
-          week_start_date: mealPlan.week_start_date,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
+    const { data: savedPlan, error: planError } = await supabase
+      .from('meal_plans')
+      .insert({
+        user_id: userId,
+        week_start_date: mealPlan.week_start_date,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
 
-      if (mealPlanError) {
-        throw new Error('Failed to create meal plan');
-      }
+    if (planError) {
+      await rollback();
+      throw planError;
+    }
 
-      // Create meal plan items with real recipe IDs
-      const mealPlanItems = mealPlan.meals.map(meal => ({
-        meal_plan_id: savedMealPlan.id,
-        recipe_id: recipeIdMap.get(meal.recipe_id) || meal.recipe_id,
+    const items = mealPlan.meals
+      .map((meal: { recipe_id: string; day_of_week: number; meal_type: string; servings: number }) => ({
+        meal_plan_id: savedPlan.id,
+        recipe_id: recipeIdMap.get(meal.recipe_id),
         day_of_week: meal.day_of_week,
         meal_type: meal.meal_type,
         servings: meal.servings,
-        created_at: new Date().toISOString()
-      }));
+        created_at: new Date().toISOString(),
+      }))
+      .filter((item: { recipe_id?: string }) => Boolean(item.recipe_id));
 
-      const { error: itemsError } = await supabase
-        .from('meal_plan_items')
-        .insert(mealPlanItems);
-
+    if (items.length > 0) {
+      const { error: itemsError } = await supabase.from('meal_plan_items').insert(items);
       if (itemsError) {
-        throw new Error('Failed to create meal plan items');
+        await rollback(savedPlan.id);
+        throw itemsError;
       }
-
-      // Fetch complete meal plan with items
-      const { data: completePlan, error: fetchError } = await supabase
-        .from('meal_plans')
-        .select(`
-          *,
-          meals:meal_plan_items(
-            *,
-            recipe:recipes(*)
-          )
-        `)
-        .eq('id', savedMealPlan.id)
-        .single();
-
-      if (fetchError) {
-        throw new Error('Failed to fetch complete meal plan');
-      }
-
-      res.status(200).json(completePlan);
-    } catch (error) {
-      console.error('Error generating meal plan:', error);
-      res.status(500).json({ 
-        error: 'Failed to generate meal plan',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      });
     }
-  }
 
-  /**
-   * Enhances an existing recipe with additional details or improvements
-   */
-  async enhanceRecipe(req: Request, res: Response): Promise<void> {
+    const { data: completePlan, error: fetchError } = await supabase
+      .from('meal_plans')
+      .select(`*, meals:meal_plan_items(*, recipe:recipes(*))`)
+      .eq('id', savedPlan.id)
+      .single();
+
+    if (fetchError) throw fetchError;
+
+    res.status(201).json(completePlan);
+  };
+
+  /** Rewrites a recipe with professional technique, tips, and storage notes. */
+  enhanceRecipe = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { recipe_id } = req.params;
+
+    const { data: recipe, error: fetchError } = await supabase
+      .from('recipes')
+      .select('*')
+      .eq('id', recipe_id)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+    if (!recipe) {
+      // The recipe never existed, so no model call was made.
+      await refundQuota(req);
+      throw notFound('Recipe');
+    }
+
+    let enhancement;
     try {
-      const { recipe_id } = req.params;
+      enhancement = await aiService.enhanceRecipe(recipe);
+    } catch (error) {
+      await refundQuota(req);
+      throw error;
+    }
 
-      // Fetch recipe from database
-      const { data: recipe, error: fetchError } = await supabase
+    // Enhancing writes to the shared recipes table, so only the owner of a
+    // user-generated recipe may overwrite it. For anything else — seeded
+    // library recipes, or another user's — save the result as a new recipe
+    // owned by this caller instead of mutating the original.
+    const canOverwrite = recipe.user_generated && recipe.created_by === userId;
+
+    if (canOverwrite) {
+      const { data: updated, error: updateError } = await supabase
         .from('recipes')
-        .select('*')
-        .eq('id', recipe_id)
-        .single();
-
-      if (fetchError || !recipe) {
-        return res.status(404).json({ error: 'Recipe not found' });
-      }
-
-      const enhancements = await aiService.enhanceRecipe(recipe);
-
-      // Update recipe with enhancements
-      const { data: updatedRecipe, error: updateError } = await supabase
-        .from('recipes')
-        .update({
-          ...enhancements,
-          enhanced_at: new Date().toISOString()
-        })
+        .update({ ...enhancement, enhanced_at: new Date().toISOString() })
         .eq('id', recipe_id)
         .select()
         .single();
 
-      if (updateError) {
-        throw new Error('Failed to update recipe');
-      }
-
-      res.status(200).json(updatedRecipe);
-    } catch (error) {
-      console.error('Error enhancing recipe:', error);
-      res.status(500).json({ error: 'Failed to enhance recipe' });
+      if (updateError) throw updateError;
+      return res.json(updated);
     }
-  }
 
-  /**
-   * Suggests ingredient substitutions based on availability or dietary needs
-   */
-  async suggestSubstitutions(req: Request, res: Response): Promise<void> {
+    const { data: copy, error: copyError } = await supabase
+      .from('recipes')
+      .insert({
+        ...toRecipeRow(recipe as Recipe, userId),
+        ...enhancement,
+        title: recipe.title,
+        enhanced_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (copyError) throw copyError;
+
+    res.status(201).json(copy);
+  };
+
+  /** Suggests substitutions for a single ingredient, honoring dietary needs. */
+  suggestSubstitutions = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { ingredient, reason } = req.body as { ingredient: string; reason?: string };
+
+    const preferences = await loadPreferences(userId);
+    const constraints = [
+      ...(preferences?.dietary_restrictions ?? []),
+      ...(preferences?.allergies ?? []),
+    ];
+
+    // Substitutions for a given ingredient are highly repeatable, so this is
+    // the most valuable thing to cache.
+    const cacheKey = usageService.cacheKey(
+      'ingredient_substitute',
+      userId,
+      { ingredient, reason },
+      preferences
+    );
+    const cached = await usageService.readCache<unknown>(cacheKey);
+    if (cached) {
+      await refundQuota(req);
+      return res.json(cached);
+    }
+
+    let substitutions;
     try {
-      const { user_id } = req.params;
-      const { ingredient, reason } = req.body;
-
-      if (!ingredient) {
-        return res.status(400).json({ error: 'ingredient is required' });
-      }
-
-      // Fetch user preferences for dietary restrictions
-      let dietaryRestrictions: string[] = [];
-      try {
-        const { data } = await supabase
-          .from('user_preferences')
-          .select('dietary_restrictions, allergies')
-          .eq('user_id', user_id)
-          .single();
-        
-        if (data) {
-          dietaryRestrictions = [
-            ...(data.dietary_restrictions || []),
-            ...(data.allergies || [])
-          ];
-        }
-      } catch (error) {
-        // Continue without preferences
-      }
-
-      const substitutions = await aiService.suggestSubstitutions(
-        ingredient, 
-        reason, 
-        dietaryRestrictions
-      );
-      
-      res.status(200).json(substitutions);
+      substitutions = await aiService.suggestSubstitutions(ingredient, reason, constraints);
     } catch (error) {
-      console.error('Error suggesting substitutions:', error);
-      res.status(500).json({ error: 'Failed to suggest substitutions' });
+      await refundQuota(req);
+      throw error;
     }
-  }
-} 
+
+    if (!substitutions || !Array.isArray(substitutions.substitutions)) {
+      await refundQuota(req);
+      throw upstreamFailure('The model returned an unusable response. Please try again.');
+    }
+
+    await usageService.writeCache(cacheKey, userId, 'ingredient_substitute', substitutions);
+
+    res.json(substitutions);
+  };
+}

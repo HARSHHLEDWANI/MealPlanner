@@ -1,179 +1,123 @@
 import { Request, Response } from 'express';
 import { supabase } from '../lib/supabase';
-import { model } from '../lib/gemini';
-import { Recipe } from '../types';
+import { actingUserId } from '../middleware/auth';
+import { notFound } from '../lib/errors';
 
 export class RecipeController {
-  async getAllRecipes(req: Request, res: Response) {
-    try {
-      const { data, error } = await supabase
-        .from('recipes')
-        .select('*');
+  /**
+   * Recipes are a shared library: any signed-in user can read any recipe.
+   * Paginated — this previously selected the entire table on every call.
+   */
+  getAllRecipes = async (req: Request, res: Response) => {
+    const { limit, offset, search } = req.query as unknown as {
+      limit: number;
+      offset: number;
+      search?: string;
+    };
 
-      if (error) throw error;
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch recipes' });
+    let query = supabase
+      .from('recipes')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (search) {
+      query = query.ilike('title', `%${search}%`);
     }
-  }
 
-  async getRecipeById(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      const { data, error } = await supabase
-        .from('recipes')
-        .select('*')
-        .eq('id', id)
-        .single();
+    const { data, error } = await query;
+    if (error) throw error;
 
-      if (error) throw error;
-      if (!data) {
-        return res.status(404).json({ error: 'Recipe not found' });
-      }
+    res.json(data ?? []);
+  };
 
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch recipe' });
-    }
-  }
+  getRecipeById = async (req: Request, res: Response) => {
+    const { id } = req.params;
 
-  async searchRecipes(req: Request, res: Response) {
-    try {
-      const { query } = req.body;
-      const { data, error } = await supabase
-        .from('recipes')
-        .select('*')
-        .textSearch('title', query);
+    const { data, error } = await supabase
+      .from('recipes')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
 
-      if (error) throw error;
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to search recipes' });
-    }
-  }
+    if (error) throw error;
+    if (!data) throw notFound('Recipe');
 
-  async generateRecipes(req: Request, res: Response) {
-    try {
-      const { ingredients } = req.body;
-      
-      const prompt = `Generate 3 unique recipes using these ingredients: ${ingredients.join(', ')}. 
-      Format the response as a JSON array with this structure:
-      [
-        {
-          "title": "Creative Recipe Title",
-          "ingredients": ["ingredient1 with quantity", "ingredient2 with quantity"],
-          "instructions": ["step1", "step2"],
-          "prepTime": "30 minutes",
-          "servings": 4,
-          "difficulty": "Easy/Medium/Hard"
-        }
-      ]`;
+    res.json(data);
+  };
 
-      const result = await model.generateContent(prompt);
-      const recipes = JSON.parse(result.response.text());
-      
-      // Store generated recipes
-      const { data, error } = await supabase
-        .from('recipes')
-        .insert(recipes.map((recipe: Recipe) => ({
-          ...recipe,
-          user_generated: true,
-          created_at: new Date().toISOString()
-        })))
-        .select();
+  /**
+   * The recipes this user has saved.
+   *
+   * The route for this never existed, so the frontend's GET /api/recipes/saved
+   * fell through to GET /:id and looked up a recipe with the literal ID
+   * "saved".
+   */
+  getSavedRecipes = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
 
-      if (error) throw error;
-      res.json(data);
-    } catch (error) {
-      console.error('Error generating recipes:', error);
-      res.status(500).json({ error: 'Failed to generate recipes' });
-    }
-  }
+    const { data, error } = await supabase
+      .from('saved_recipes')
+      .select('recipe:recipes(*)')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
 
-  async enhanceRecipe(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      const { data: recipe, error: fetchError } = await supabase
-        .from('recipes')
-        .select('*')
-        .eq('id', id)
-        .single();
+    if (error) throw error;
 
-      if (fetchError) throw fetchError;
-      if (!recipe) {
-        return res.status(404).json({ error: 'Recipe not found' });
-      }
+    // Unwrap the join so the client receives a plain Recipe[].
+    res.json((data ?? []).map((row: { recipe: unknown }) => row.recipe).filter(Boolean));
+  };
 
-      const prompt = `Enhance this recipe with suggestions:
-      Title: ${recipe.title}
-      Ingredients: ${recipe.ingredients.join(', ')}
-      Instructions: ${recipe.instructions.join('\n')}
-      
-      Format the response as a JSON object with this structure:
-      {
-        "alternativeIngredients": ["alternative1", "alternative2"],
-        "cookingTips": ["tip1", "tip2"],
-        "servingSuggestions": ["suggestion1", "suggestion2"],
-        "storageInstructions": "Storage instructions here",
-        "nutritionalInfo": {
-          "calories": "per serving",
-          "protein": "grams",
-          "carbs": "grams",
-          "fat": "grams"
-        }
-      }`;
+  searchRecipes = async (req: Request, res: Response) => {
+    const { query } = req.body as { query: string };
 
-      const result = await model.generateContent(prompt);
-      const enhancements = JSON.parse(result.response.text());
+    // ilike rather than textSearch: the column has no tsvector index, and
+    // textSearch rejects ordinary multi-word input as a malformed tsquery.
+    const { data, error } = await supabase
+      .from('recipes')
+      .select('*')
+      .ilike('title', `%${query}%`)
+      .limit(50);
 
-      // Update recipe with enhancements
-      const { data, error } = await supabase
-        .from('recipes')
-        .update({
-          ...enhancements,
-          enhanced_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select();
+    if (error) throw error;
 
-      if (error) throw error;
-      res.json(data);
-    } catch (error) {
-      console.error('Error enhancing recipe:', error);
-      res.status(500).json({ error: 'Failed to enhance recipe' });
-    }
-  }
+    res.json(data ?? []);
+  };
 
-  async saveRecipe(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      const { user_id } = req.body;
+  saveRecipe = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { id } = req.params;
 
-      const { error } = await supabase
-        .from('saved_recipes')
-        .insert({ user_id, recipe_id: id });
+    const { data: recipe, error: lookupError } = await supabase
+      .from('recipes')
+      .select('id')
+      .eq('id', id)
+      .maybeSingle();
 
-      if (error) throw error;
-      res.json({ message: 'Recipe saved successfully' });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to save recipe' });
-    }
-  }
+    if (lookupError) throw lookupError;
+    if (!recipe) throw notFound('Recipe');
 
-  async unsaveRecipe(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      const { user_id } = req.body;
+    // Idempotent: saving twice is a no-op rather than a unique-constraint 500.
+    const { error } = await supabase
+      .from('saved_recipes')
+      .upsert({ user_id: userId, recipe_id: id }, { onConflict: 'user_id,recipe_id' });
 
-      const { error } = await supabase
-        .from('saved_recipes')
-        .delete()
-        .match({ user_id, recipe_id: id });
+    if (error) throw error;
 
-      if (error) throw error;
-      res.json({ message: 'Recipe unsaved successfully' });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to unsave recipe' });
-    }
-  }
-} 
+    res.json({ message: 'Recipe saved successfully' });
+  };
+
+  unsaveRecipe = async (req: Request, res: Response) => {
+    const userId = actingUserId(req);
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('saved_recipes')
+      .delete()
+      .match({ user_id: userId, recipe_id: id });
+
+    if (error) throw error;
+
+    res.json({ message: 'Recipe unsaved successfully' });
+  };
+}
