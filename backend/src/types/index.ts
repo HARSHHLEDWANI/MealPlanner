@@ -17,6 +17,20 @@ export interface Recipe {
   enhanced_at?: string;
 }
 
+/**
+ * What an AI enhancement pass adds to an existing recipe. Keys are snake_case
+ * to match the columns they are written to — the model emits camelCase, and
+ * aiService maps between them explicitly.
+ */
+export interface RecipeEnhancement {
+  description: string;
+  ingredients: string[];
+  instructions: string[];
+  cooking_tips: string[];
+  serving_suggestions: string[];
+  storage_instructions?: string;
+}
+
 export interface User {
   id: string;
   email: string;

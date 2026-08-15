@@ -1,7 +1,5 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { Recipe, UserPreferences, MealPlan, MealPlanItem } from '../types';
+import { Recipe, RecipeEnhancement, UserPreferences, MealPlanItem } from '../types';
 import { model } from '../lib/gemini';
-import { supabase } from '../lib/supabase';
 
 class AIService {
   /**
@@ -76,7 +74,7 @@ Return ONLY valid JSON (no markdown, no explanations) with this exact structure:
       };
     } catch (error) {
       console.error('Error generating recipe:', error);
-      throw new Error('Failed to generate recipe');
+      throw new Error('Failed to generate recipe', { cause: error });
     }
   }
 
@@ -102,9 +100,6 @@ User Preferences:
 - Serving Size: ${servingSize} people
 `;
 
-      const weekStart = new Date(weekStartDate);
-      const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      
       const prompt = `You are a professional meal planning assistant. Generate a complete 7-day meal plan starting from ${weekStartDate}.
 
 ${preferenceContext}
@@ -196,11 +191,11 @@ Generate 21 meals total (7 days × 3 meals: breakfast, lunch, dinner). Use day_o
       };
     } catch (error) {
       console.error('Error generating meal plan:', error);
-      throw new Error('Failed to generate meal plan');
+      throw new Error('Failed to generate meal plan', { cause: error });
     }
   }
 
-  async enhanceRecipe(recipe: Recipe): Promise<Partial<Recipe>> {
+  async enhanceRecipe(recipe: Recipe): Promise<RecipeEnhancement> {
     try {
       const prompt = `You are a professional chef. Enhance this recipe with more detailed instructions, precise ingredient measurements, and professional cooking techniques:
 
@@ -232,15 +227,29 @@ Return ONLY valid JSON (no markdown, no explanations) with this structure:
       const responseText = result.response.text();
       const enhancements = this.extractJSON(responseText);
       
+      // Mapped field by field rather than spread. The model returns camelCase
+      // keys (cookingTips, servingSuggestions) that are not columns; spreading
+      // them into a Supabase update() made every enhancement fail.
       return {
         description: enhancements.description || recipe.description,
-        ingredients: enhancements.ingredients || recipe.ingredients,
-        instructions: enhancements.instructions || recipe.instructions,
-        ...enhancements
+        ingredients: Array.isArray(enhancements.ingredients)
+          ? enhancements.ingredients
+          : recipe.ingredients,
+        instructions: Array.isArray(enhancements.instructions)
+          ? enhancements.instructions
+          : recipe.instructions,
+        cooking_tips: Array.isArray(enhancements.cookingTips) ? enhancements.cookingTips : [],
+        serving_suggestions: Array.isArray(enhancements.servingSuggestions)
+          ? enhancements.servingSuggestions
+          : [],
+        storage_instructions:
+          typeof enhancements.storageInstructions === 'string'
+            ? enhancements.storageInstructions
+            : undefined
       };
     } catch (error) {
       console.error('Error enhancing recipe:', error);
-      throw new Error('Failed to enhance recipe');
+      throw new Error('Failed to enhance recipe', { cause: error });
     }
   }
 
@@ -276,7 +285,7 @@ Return ONLY valid JSON (no markdown, no explanations) with this structure:
       return this.extractJSON(responseText);
     } catch (error) {
       console.error('Error suggesting substitutions:', error);
-      throw new Error('Failed to suggest substitutions');
+      throw new Error('Failed to suggest substitutions', { cause: error });
     }
   }
 }

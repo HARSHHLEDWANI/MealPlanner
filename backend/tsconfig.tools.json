@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // vitest.config.mts is ESM; the server build is CommonJS.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    // The base config sets rootDir to ./src for the build output layout. This
+    // file sits above it and nothing is emitted here, so widen it.
+    "rootDir": ".",
+    "noEmit": true
+  },
+  // The main tsconfig includes only src/, so this file belonged to no project
+  // and its type errors were never checked by anything.
+  "include": ["vitest.config.mts"]
+}

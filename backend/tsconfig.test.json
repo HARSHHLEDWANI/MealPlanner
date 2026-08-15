@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Tests use top-level `await import()` so module mocks are registered
+    // before the module under test is loaded, which needs an ESM module target.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["vitest/globals", "node"],
+    "noEmit": true
+  },
+  "include": ["src/**/*"]
+}

@@ -1,10 +1,15 @@
 {
   "compilerOptions": {
-    "target": "es6",
+    // ES2022 for Error `cause`, which the service layer uses to keep the
+    // original failure attached when it rethrows a friendlier message.
+    "target": "ES2022",
+    "lib": ["ES2022"],
     "module": "commonjs",
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -16,5 +21,7 @@
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
-} 
+  // Tests are typechecked by tsconfig.test.json; they must not be emitted
+  // into dist and shipped to production.
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/__tests__/**"]
+}
