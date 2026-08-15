@@ -1,251 +1,221 @@
-# AI Features Testing Guide
+# Testing the AI features by hand
 
-## 🚀 Quick Start
+How to exercise the AI endpoints against a running local stack. For the full endpoint reference see [ARCHITECTURE.md](ARCHITECTURE.md#api-reference); for setup see [README.md](README.md).
 
-### 1. **Environment Setup**
+> Every endpoint below changed shape when authentication was added. The `{user_id}` path segments this guide used to describe are gone — the API derives the acting user from the bearer token, and a request without one is rejected.
 
-First, make sure you have your environment variables set up:
+---
 
-**Backend** (`MealPlanner/backend/.env`):
+## 1. Environment
+
+**`backend/.env`**
+
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-1.5-flash  # Optional: use gemini-1.5-pro for better quality
-SUPABASE_URL=your_supabase_url
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 PORT=5001
+SUPABASE_URL=https://<project>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service role key>
+GEMINI_API_KEY=<your Gemini key>
+GEMINI_MODEL=gemini-1.5-flash
+CORS_ALLOWED_ORIGINS=http://localhost:3001
+AI_DAILY_QUOTA=50
 ```
 
-**Frontend** (`MealPlanner/frontend/.env`):
+**`frontend/.env`**
+
 ```env
+VITE_SUPABASE_URL=https://<project>.supabase.co
+VITE_SUPABASE_ANON_KEY=<anon key>
 VITE_API_URL=http://localhost:5001
 ```
 
-### 2. **Start the Servers**
+Apply all three migrations in `supabase/migrations/` before starting.
 
-**Terminal 1 - Backend:**
+---
+
+## 2. Start both apps
+
 ```bash
-cd MealPlanner/backend
-npm install  # if needed
-npm run dev
+cd backend  && npm run dev    # http://localhost:5001
+cd frontend && npm run dev    # http://localhost:3001
 ```
 
-**Terminal 2 - Frontend:**
+Confirm the API is up:
+
 ```bash
-cd MealPlanner/frontend
-npm install  # if needed
-npm run dev
+curl http://localhost:5001/health
+# {"status":"ok"}
 ```
 
 ---
 
-## 📍 Where to Test AI Features
+## 3. Get a token
 
-### **Option 1: Frontend UI (Recommended)**
+Every `/api` route needs one. The quickest way is to sign in through the app at `http://localhost:3001/login`, then read the session from the browser console:
 
-1. **Navigate to the AI Page:**
-   - Open your browser to `http://localhost:5173` (or your frontend port)
-   - Login if needed
-   - Go to: **`/ai`** route
-   - You'll see tabs for:
-     - **Recipe Generator** - Generate new recipes
-     - **Meal Plan Generator** - Create 7-day meal plans
-     - **Recipe Enhancer** - Enhance existing recipes
-     - **Ingredient Substitutions** - Get substitution suggestions
+```js
+// DevTools console, on the running app
+const { data } = await window.supabase?.auth.getSession?.() ?? {};
+// If that is not exposed, read it out of storage instead:
+const key = Object.keys(localStorage).find((k) => k.startsWith('sb-') && k.endsWith('-auth-token'));
+JSON.parse(localStorage.getItem(key)).access_token;
+```
 
-2. **Test Meal Plan Generation:**
-   - Click on "Meal Plan Generator" tab
-   - Select a start date (must be today or future)
-   - Click "Generate Meal Plan"
-   - The system will:
-     - Fetch your user preferences
-     - Generate 21 meals (7 days × 3 meals)
-     - Save all recipes to database
-     - Create meal plan with proper relationships
+Then:
 
-3. **Test Recipe Generation:**
-   - Click on "Recipe Generator" tab
-   - Enter a recipe query (e.g., "Chicken Tikka Masala")
-   - Optionally select a cuisine
-   - Click generate
-   - Recipe will respect your dietary preferences
+```bash
+export TOKEN='<paste the access token>'
+export API=http://localhost:5001
+```
 
-### **Option 2: Backend API Endpoints (Direct Testing)**
+Sanity check — this should return your saved recipes rather than a 401:
 
-You can test the endpoints directly using:
-- **Postman**
-- **Thunder Client** (VS Code extension)
-- **curl** commands
-- **Browser** (for GET requests)
+```bash
+curl -s $API/api/recipes/saved -H "Authorization: Bearer $TOKEN"
+```
 
-#### **Available AI Endpoints:**
-
-1. **Generate Meal Plan:**
-   ```
-   POST http://localhost:5001/api/ai/meal-plan/generate/{user_id}
-   Body: {
-     "week_start_date": "2024-01-15"
-   }
-   ```
-
-2. **Generate Recipe:**
-   ```
-   POST http://localhost:5001/api/ai/recipe/generate/{user_id}
-   Body: {
-     "query": "Pasta Carbonara",
-     "cuisine": "Italian"  // optional
-   }
-   ```
-
-3. **Enhance Recipe:**
-   ```
-   POST http://localhost:5001/api/ai/recipe/enhance/{recipe_id}
-   ```
-
-4. **Get Ingredient Substitutions:**
-   ```
-   POST http://localhost:5001/api/ai/ingredients/substitute/{user_id}
-   Body: {
-     "ingredient": "butter",
-     "reason": "dairy-free diet"  // optional
-   }
-   ```
-
-### **Option 3: Check Backend Logs**
-
-When you run `npm run dev` in the backend, you'll see:
-- Console logs for AI generation
-- Error messages if something fails
-- Success confirmations
+Tokens are short-lived. A sudden run of 401s usually means it expired, not that something broke.
 
 ---
 
-## ✅ What to Verify
+## 4. Check your quota first
 
-### **1. User Preferences Integration**
-- Set up user preferences first: `POST /api/preferences/{user_id}`
-- Generate a meal plan
-- Verify it respects:
-  - Dietary restrictions
-  - Allergies
-  - Preferred cuisines
-  - Cooking skill level
-  - Serving size
+AI calls are metered and capped per user per day. This endpoint is free:
 
-### **2. Database Integration**
-- Check `recipes` table - should have new AI-generated recipes
-- Check `meal_plans` table - should have new meal plan
-- Check `meal_plan_items` table - should have 21 items linked to recipes
+```bash
+curl -s $API/api/ai/usage -H "Authorization: Bearer $TOKEN"
+# {"allowed":true,"used":0,"quota":50,"remaining":50}
+```
 
-### **3. Response Quality**
-- Recipes should have:
-  - Proper ingredient measurements
-  - Step-by-step instructions
-  - Cooking times
-  - Difficulty levels
-- Meal plans should have:
-  - Variety across the week
-  - Proper meal types (breakfast, lunch, dinner)
-  - Correct day_of_week values (0-6)
+Costs per call: recipe generation 1, enhancement 1, substitutions 1, image analysis 2, **meal plan 5**.
 
 ---
 
-## 🧪 Example Test Scenarios
+## 5. Set preferences
 
-### **Scenario 1: Generate Meal Plan for Vegetarian**
-1. Set user preferences:
-   ```json
-   POST /api/preferences/{user_id}
-   {
-     "dietary_restrictions": ["Vegetarian"],
-     "allergies": [],
-     "preferred_cuisines": ["Italian", "Mediterranean"],
-     "cooking_skill_level": "Intermediate",
-     "serving_size": 2
-   }
-   ```
+These become hard constraints in every prompt, so set them before testing generation — it is the most useful thing to verify.
 
-2. Generate meal plan:
-   ```json
-   POST /api/ai/meal-plan/generate/{user_id}
-   {
-     "week_start_date": "2024-01-15"
-   }
-   ```
-
-3. Verify: All recipes should be vegetarian, prefer Italian/Mediterranean
-
-### **Scenario 2: Generate Recipe with Allergies**
-1. Set preferences with allergies:
-   ```json
-   {
-     "allergies": ["Peanuts", "Shellfish"]
-   }
-   ```
-
-2. Generate recipe:
-   ```json
-   POST /api/ai/recipe/generate/{user_id}
-   {
-     "query": "Thai curry"
-   }
-   ```
-
-3. Verify: Recipe should NOT contain peanuts or shellfish
+```bash
+curl -s -X PUT $API/api/preferences \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dietary_restrictions": ["vegetarian"],
+    "allergies": ["peanuts", "shellfish"],
+    "preferred_cuisines": ["Italian", "Thai"],
+    "cooking_skill_level": "Intermediate",
+    "serving_size": 2
+  }'
+```
 
 ---
 
-## 🐛 Troubleshooting
+## 6. Generate a recipe
 
-### **Issue: "GEMINI_API_KEY is required"**
-- **Solution:** Add `GEMINI_API_KEY` to `backend/.env`
+```bash
+curl -s -X POST $API/api/ai/recipe/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "a warming weeknight curry", "cuisine": "Thai"}'
+```
 
-### **Issue: "Failed to generate meal plan"**
-- Check backend logs for detailed error
-- Verify Supabase connection
-- Check if user preferences exist
+**What to check**
 
-### **Issue: JSON parsing errors**
-- The AI service now handles markdown code blocks
-- If still failing, check the raw response in logs
-
-### **Issue: Recipes not saving**
-- Verify Supabase connection
-- Check database schema matches types
-- Look for foreign key constraints
+- It honours the preferences above — vegetarian, no peanuts. Peanuts in a Thai curry is a good adversarial test.
+- `ingredients` and `instructions` are arrays of strings.
+- `created_by` is your user ID and `user_generated` is `true`.
+- Repeating the identical request within 15 minutes returns the cached result and does **not** increase `used` — check `/api/ai/usage` before and after.
 
 ---
 
-## 📊 Files to Check
+## 7. Generate a meal plan
 
-### **Backend Files:**
-- `backend/src/services/aiService.ts` - Core AI logic
-- `backend/src/controllers/aiController.ts` - API handlers
-- `backend/src/lib/gemini.ts` - Gemini configuration
-- `backend/src/routes/aiRoutes.ts` - Route definitions
+The heaviest call — 21 meals in one request, and 5 against your quota. It can take 30 seconds or more.
 
-### **Frontend Files:**
-- `frontend/src/pages/ai/index.tsx` - AI page component
-- `frontend/src/components/ai/MealPlanGenerator.tsx` - Meal plan UI
-- `frontend/src/components/ai/RecipeGenerator.tsx` - Recipe UI
+```bash
+curl -s -X POST $API/api/ai/meal-plan/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"week_start_date": "2026-08-16"}'
+```
 
----
+**What to check**
 
-## 🎯 Next Steps
-
-1. **Test all AI features** using the frontend UI
-2. **Set up user preferences** to see personalized results
-3. **Check the database** to verify data is being saved correctly
-4. **Review generated content** for quality and accuracy
-5. **Adjust prompts** in `aiService.ts` if needed for better results
+- 21 items across `day_of_week` 0–6 and three meal types.
+- No repeated dishes, and every one respects the allergy list.
+- Each item has a joined `recipe` object.
+- Not cached, by design — regenerating should give you something different.
 
 ---
 
-## 💡 Tips
+## 8. Enhance a recipe
 
-- Start with simple queries to test basic functionality
-- Set up user preferences before generating meal plans for best results
-- Check browser console and backend logs for debugging
-- Use Postman/Thunder Client for quick API testing
-- The AI uses `gemini-1.5-flash` by default (fast, cost-effective)
-- Switch to `gemini-1.5-pro` in `.env` for higher quality (slower)
+```bash
+curl -s -X POST $API/api/ai/recipe/enhance/<recipe-id> \
+  -H "Authorization: Bearer $TOKEN"
+```
 
+Enhancing a recipe **you generated** overwrites it. Enhancing a seeded library recipe returns a **new copy** owned by you — the shared original is left alone. Worth testing both.
+
+---
+
+## 9. Ingredient substitutions
+
+```bash
+curl -s -X POST $API/api/ai/ingredients/substitute \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"ingredient": "butter", "reason": "making it dairy-free"}'
+```
+
+Cached for 15 minutes, so a repeat is free.
+
+---
+
+## 10. Image analysis
+
+Easiest through the UI at `/image-recognition`. By curl:
+
+```bash
+IMG=$(base64 -w0 fridge.jpg)
+curl -s -X POST $API/api/images/analyze \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"image\": \"data:image/jpeg;base64,$IMG\"}"
+```
+
+**What to check**
+
+- Only things actually in the photo. The prompt tells the model not to guess, so a photo of an empty counter should return an empty array rather than inventing produce.
+- No cookware, packaging or surfaces.
+- Items it is unsure about come back with `confidence` below `high`.
+
+---
+
+## Troubleshooting
+
+**`401 UNAUTHORIZED`** — missing, malformed or expired token. Sign in again and re-copy it.
+
+**`429 QUOTA_EXCEEDED`** — daily allowance spent; resets tomorrow. Raise `AI_DAILY_QUOTA` for testing.
+
+**`429 RATE_LIMITED` / `AI_RATE_LIMITED`** — too fast, not too many. Wait a few minutes.
+
+**`400 BAD_REQUEST`** — the `details` array names the offending field. Free-text prompts are capped at 500 characters.
+
+**`502 UPSTREAM_FAILURE`** — the model returned something unparseable. Retry; the quota reservation is refunded automatically.
+
+**`GEMINI_API_KEY is required` at startup** — the backend fails fast on missing configuration by design. Check `backend/.env`.
+
+**CORS errors in the browser** — `CORS_ALLOWED_ORIGINS` must name the frontend's exact origin, including port and scheme.
+
+---
+
+## Automated tests
+
+Manual checks complement the suite; they do not replace it.
+
+```bash
+cd backend  && npm test    # 60 tests: auth on all 24 routes, controllers, quota
+cd frontend && npm test    # 27 tests: stores and the AI flow
+```
+
+Both run in CI on every push, alongside lint, typecheck, build, and a parse check of the migrations.
