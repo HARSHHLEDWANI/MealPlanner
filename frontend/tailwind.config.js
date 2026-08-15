@@ -8,6 +8,12 @@ export default {
     extend: {
       colors: {
         primary: {
+          // Aliases so a bare `bg-primary` / `hover:bg-primary-dark` resolves.
+          // Several pages used those classes while the config only defined the
+          // numbered scale, so they silently rendered no colour at all.
+          DEFAULT: '#f97316',
+          dark: '#c2410c',
+          light: '#fdba74',
           50: '#fff7ed',
           100: '#ffedd5',
           200: '#fed7aa',
@@ -20,6 +26,8 @@ export default {
           900: '#7c2d12',
         },
         secondary: {
+          DEFAULT: '#eab308',
+          dark: '#a16207',
           50: '#fefce8',
           100: '#fef9c3',
           200: '#fef08a',
@@ -55,11 +63,22 @@ export default {
       animation: {
         'slide-up': 'slideUp 0.3s ease-out',
         'loading': 'loading 1.5s ease-in-out infinite',
+        // AuthLayout referenced animate-fade-in, which was never defined.
+        'fade-in': 'fadeIn 0.3s ease-in',
+        'shimmer': 'shimmer 1.6s ease-in-out infinite',
       },
       keyframes: {
         slideUp: {
           '0%': { transform: 'translateY(100%)', opacity: '0' },
           '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
+        fadeIn: {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        },
+        shimmer: {
+          '0%, 100%': { opacity: '0.45' },
+          '50%': { opacity: '0.85' },
         },
         loading: {
           '0%': { transform: 'translateX(-100%)' },

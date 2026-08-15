@@ -1,14 +1,25 @@
-/* Import fonts */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Global styles only.
+
+  The .btn / .btn-primary / .card / .input component classes that used to live
+  here were a parallel, competing design system to src/components/ui — two
+  places defining what a button looks like, drifting apart. Components own
+  those decisions now; this file covers document-level styling and the few
+  utilities Tailwind does not ship.
+*/
+
 @layer base {
   html {
     font-family: 'Inter', system-ui, sans-serif;
     scroll-behavior: smooth;
+    /* Keeps iOS Safari from inflating text in landscape. */
+    -webkit-text-size-adjust: 100%;
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -19,75 +30,39 @@
     @apply bg-neutral-50 text-neutral-900 antialiased min-h-screen;
   }
 
-  /* Custom scrollbar */
+  /* A visible focus ring for keyboard users, without drawing one on every
+     mouse click. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary-500 ring-offset-2;
+  }
+
   ::-webkit-scrollbar {
     @apply w-2;
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-neutral-100 rounded;
+    @apply bg-neutral-100;
   }
 
   ::-webkit-scrollbar-thumb {
     @apply bg-neutral-300 rounded hover:bg-neutral-400;
   }
+
+  /* Respect a user's reduced-motion preference. The app animates page
+     entrances and skeletons, which can be uncomfortable for some people. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-@layer components {
-  .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-opacity-50 disabled:opacity-50;
-  }
-
-  .btn-primary {
-    @apply btn bg-primary-500 text-white hover:bg-primary-600 focus:ring-primary-400 shadow-sm hover:shadow-md;
-  }
-
-  .btn-secondary {
-    @apply btn bg-secondary-500 text-white hover:bg-secondary-600 focus:ring-secondary-400 shadow-sm hover:shadow-md;
-  }
-
-  .btn-outline {
-    @apply btn border border-neutral-300 hover:bg-neutral-50 focus:ring-neutral-300;
-  }
-
-  .input {
-    @apply w-full px-4 py-2.5 rounded-lg border border-primary-200 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 transition-shadow;
-  }
-
-  .card {
-    @apply bg-white rounded-xl shadow-card transition-all duration-300 hover:shadow-card-hover p-6;
-  }
-
-  .recipe-card {
-    @apply card overflow-hidden cursor-pointer transition-all duration-300 hover:translate-y-[-4px] hover:shadow-lg;
-  }
-
-  .ingredient-tag {
-    @apply inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-primary-100 text-primary-800 m-1 transition-colors hover:bg-primary-200;
-  }
-
-  /* Loading spinner */
-  .spinner {
-    @apply w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin;
-  }
-
-  /* Fade in animation */
-  .fade-in {
-    animation: fadeIn 0.3s ease-in;
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  /* Slide up animation */
-  .slide-up {
-    animation: slideUp 0.3s ease-out;
-  }
-
-  @keyframes slideUp {
-    from { transform: translateY(20px); opacity: 0; }
-    to { transform: translateY(0); opacity: 1; }
+@layer utilities {
+  /* Avoids awkward one-word last lines in headings. */
+  .text-balance {
+    text-wrap: balance;
   }
 }
