@@ -1,0 +1,59 @@
+# Render blueprint for the Express API.
+#
+# The frontend deploys separately to Vercel (see frontend/vercel.json).
+#
+# Every value marked sync:false must be set by hand in the Render dashboard —
+# they are secrets and must never live in this file, which is committed.
+services:
+  - type: web
+    name: mealplanner-api
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: backend
+
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+
+    # Render probes this to decide whether an instance is live. It is one of
+    # the two routes that does not require a bearer token.
+    healthCheckPath: /health
+
+    envVars:
+      - key: NODE_VERSION
+        value: '20'
+
+      - key: PORT
+        # Render injects the port to bind; the app reads process.env.PORT.
+        value: '5001'
+
+      # Render terminates TLS at its proxy, so the client address arrives in
+      # X-Forwarded-For. Without this the rate limiters key every request to
+      # the proxy and throttle all users as if they were one.
+      - key: TRUST_PROXY
+        value: 'true'
+
+      # Must list the deployed frontend origin. A mismatch here is the usual
+      # cause of "works locally, blocked in production" CORS failures.
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+      - key: SUPABASE_URL
+        sync: false
+
+      # Bypasses row-level security. Server-side only.
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # Metered and billable.
+      - key: GEMINI_API_KEY
+        sync: false
+
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+
+      - key: AI_DAILY_QUOTA
+        value: '50'
+
+      - key: AI_CACHE_TTL_MINUTES
+        value: '15'
